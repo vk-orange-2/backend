@@ -1,0 +1,39 @@
+upstream centrifugo_upstream {
+    server centrifugo:8001;
+    server centrifugo:8000;
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name localhost;
+
+    location /centrifugo/ {
+        rewrite ^/centrifugo/(.*) /$1 break;
+        proxy_pass http://centrifugo_upstream;
+        proxy_pass_header Server;
+        proxy_set_header Host $http_host;
+        proxy_redirect off;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Scheme $scheme;
+    }
+
+    location /centrifugo/connection {
+        rewrite ^/centrifugo(.*) $1 break;
+        proxy_pass http://centrifugo_upstream;
+        proxy_buffering off;
+        keepalive_timeout 65;
+        proxy_read_timeout 60s;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Scheme $scheme;
+        proxy_set_header Host $http_host;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+}

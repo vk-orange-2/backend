@@ -1,0 +1,53 @@
+services:
+  centrifugo:
+    image: centrifugo/centrifugo:v6.7
+    volumes:
+      - ./config/centrifugo.json:/centrifugo/config.json
+    command: centrifugo -c config.json
+    # ports:
+    #   - 8000-8001:8000
+    #   - 10000-10001:10000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    depends_on:
+      - centrifugo_redis
+    deploy:
+      replicas: 2
+    environment:
+      CENTRIFUGO_ENGINE_REDIS_ADDRESS: ${CENTRIFUGO_REDIS_ADDRESS}
+      CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_API_KEY}
+      CENTRIFUGO_GRPC_API_KEY: ${CENTRIFUGO_API_KEY}
+      CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${JWT_SECRET}
+      CENTRIFUGO_ADMIN_SECRET: ${CENTRIFUGO_ADMIN_SECRET}
+      CENTRIFUGO_ADMIN_PASSWORD: ${CENTRIFUGO_ADMIN_PASSWORD}
+
+  centrifugo_redis:
+    image: redis:8.6.2-alpine
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  nginx:
+    image: nginx:1.29.8-alpine
+    volumes:
+      - ./config/nginx:/etc/nginx/templates
+    depends_on:
+      - centrifugo
+    ports:
+      - "8080:80"
+
+volumes:
+  redis-data:

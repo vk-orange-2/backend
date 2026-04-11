@@ -1,0 +1,33 @@
+{
+    "client": {
+        "allowed_origins": ["*"]
+    },
+    "engine": {
+        "type": "redis"
+    },
+    "channel": {
+        "namespaces": [
+            {
+                "name": "service",
+                "allow_subscribe_for_client": true,
+                "allow_subscribe_for_anonymous": true,
+                "presence": true,
+                "force_recovery": true,
+                "history_size": 10,
+                "history_ttl": "300s"
+            }
+        ]
+    },
+    "admin": {
+        "enabled": true
+    },
+    "grpc_api": {
+        "enabled": true
+    },
+    "prometheus": {
+        "enabled": true
+    },
+    "debug": {
+        "enabled": true
+    }
+}
