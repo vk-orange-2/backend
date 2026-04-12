@@ -4,8 +4,8 @@ services:
     volumes:
       - ./config/centrifugo.json:/centrifugo/config.json
     command: centrifugo -c config.json
-    # ports:
-    #   - 8000-8001:8000
+    ports:
+      - 8000-8001:8000
     #   - 10000-10001:10000
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
