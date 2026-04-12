@@ -167,7 +167,7 @@ public class Client {
 
     private void connectToCentrifugo() {
         try {
-            String channel = "service:" + service + "--" + env;
+            String channel = "service:" + service + ":" + env;
 
             Options options = new Options();
 

@@ -37,7 +37,6 @@ server {
         proxy_set_header Connection $connection_upgrade;
     }
 
-    # Stub endpoint for /v1/configs - returns mock config data
     location /v1/configs {
         default_type application/json;
         return 200 '{"configs":[{"configKey":"example-config","currentVersion":1,"latestVersion":{"payload":{"key":"value"}}}]}';

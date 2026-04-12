@@ -116,7 +116,7 @@ class ClientIntegrationTest {
         Thread.sleep(1000);
 
         // When: We publish a config to Centrifugo
-        String channel = "service:" + SERVICE + "--" + ENV;
+        String channel = "service:" + SERVICE + ":" + ENV;
         String publishPayload = "{\"key\":\"published-config\",\"version\":42,\"payload\":{\"data\":\"test-value\"}}";
 
         HttpClient httpClient = HttpClient.newHttpClient();
