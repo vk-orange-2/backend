@@ -52,6 +52,14 @@ public class ConfigService {
                 .toList();
     }
 
+    /**
+     * Возвращает все service
+     */
+    @Transactional(readOnly = true)
+    public List<String> getServices() {
+        return configRepository.findDistinctServices();
+    }
+
     private ConfigResponse toResponse(ConfigEntity entity) {
         return ConfigResponse.builder()
                 .id(entity.getId())
