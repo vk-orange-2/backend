@@ -19,6 +19,17 @@
             }
         ]
     },
+    "consumers": [
+        {
+            "enabled": true,
+            "name": "postgres",
+            "type": "postgresql",
+            "postgresql": {
+                "outbox_table_name": "centrifugo_outbox",
+                "partition_notification_channel": "centrifugo_notify"
+            }
+        }
+    ],
     "admin": {
         "enabled": true
     },

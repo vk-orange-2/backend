@@ -4,7 +4,7 @@ services:
     volumes:
       - ./config/centrifugo.json:/centrifugo/config.json
     command: centrifugo -c config.json
-    ports:
+    # ports:
     #   - 8000-8001:8000
     #   - 10000-10001:10000
     healthcheck:
@@ -28,6 +28,7 @@ services:
       CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${JWT_SECRET}
       CENTRIFUGO_ADMIN_SECRET: ${CENTRIFUGO_ADMIN_SECRET}
       CENTRIFUGO_ADMIN_PASSWORD: ${CENTRIFUGO_ADMIN_PASSWORD}
+      CENTRIFUGO_CONSUMERS_POSTGRES_POSTGRESQL_DSN: ${POSTGRES_DSN}
 
   centrifugo_redis:
     image: redis:8.6.2-alpine
