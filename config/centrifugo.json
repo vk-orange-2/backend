@@ -1,0 +1,45 @@
+{
+    "client": {
+        "allow_anonymous_connect_without_token": true,
+        "allowed_origins": ["*"]
+    },
+    "engine": {
+        "type": "redis"
+    },
+    "channel": {
+        "namespaces": [
+            {
+                "name": "service",
+                "allow_subscribe_for_client": true,
+                "allow_subscribe_for_anonymous": true,
+                "presence": true,
+                "force_recovery": true,
+                "history_size": 10,
+                "history_ttl": "300s"
+            }
+        ]
+    },
+    "consumers": [
+        {
+            "enabled": true,
+            "name": "postgres",
+            "type": "postgresql",
+            "postgresql": {
+                "outbox_table_name": "centrifugo_outbox",
+                "partition_notification_channel": "centrifugo_notify"
+            }
+        }
+    ],
+    "admin": {
+        "enabled": true
+    },
+    "grpc_api": {
+        "enabled": true
+    },
+    "prometheus": {
+        "enabled": true
+    },
+    "debug": {
+        "enabled": true
+    }
+}
