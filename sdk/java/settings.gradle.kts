@@ -11,4 +11,4 @@ plugins {
 }
 
 rootProject.name = "config-streamer-sdk"
-include("lib")
+include("sdk")

@@ -32,23 +32,14 @@ public class Client {
     private final String service;
     private final String env;
 
-    // Cache with ReadWriteLock for thread-safe access
-    // Using ReadWriteLock instead of ConcurrentHashMap because we need atomic
-    // check-and-update operations (check version, then update if newer)
     private final Map<String, Config> configCache = new HashMap<>();
     private final ReadWriteLock cacheLock = new ReentrantReadWriteLock();
 
-    // Thread-safe callbacks list - CopyOnWriteArrayList is ideal for
-    // infrequent writes (adding callbacks) and frequent reads (iterating during
-    // updates)
     private final List<Consumer<Config>> callbacks = new CopyOnWriteArrayList<>();
 
-    // HTTP client for fetching configs
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
 
-    // Centrifugo client - using fully qualified name to avoid conflict with our
-    // Client class
     private io.github.centrifugal.centrifuge.Client centrifugoClient;
 
     public Client(final String baseUrl, final String apiToken, final String service, final String env) {
@@ -94,7 +85,11 @@ public class Client {
     public Config get(String key) {
         cacheLock.readLock().lock();
         try {
-            return configCache.get(key);
+            var config = configCache.get(key);
+            if (config == null) {
+                return null;
+            }
+            return config.clone();
         } finally {
             cacheLock.readLock().unlock();
         }
@@ -144,13 +139,8 @@ public class Client {
                     for (ConfigItem item : response.configs) {
                         String key = item.configKey;
                         int version = item.currentVersion;
-                        byte[] payload = null;
 
-                        if (item.latestVersion != null && item.latestVersion.payload != null) {
-                            payload = objectMapper.writeValueAsBytes(item.latestVersion.payload);
-                        }
-
-                        Config config = new Config(key, version, payload);
+                        Config config = new Config(key, version, item.latestVersion.payload);
                         configCache.put(key, config);
                     }
                 } finally {
@@ -218,9 +208,9 @@ public class Client {
 
                 String key = message.key;
                 int newVersion = message.version;
-                byte[] payload = message.payload != null
-                        ? objectMapper.writeValueAsBytes(message.payload)
-                        : null;
+                // byte[] payload = message.payload != null
+                // ? objectMapper.writeValueAsBytes(message.payload)
+                // : null;
 
                 // Thread-safe version check and update - must be atomic
                 Config newConfig = null;
@@ -229,7 +219,7 @@ public class Client {
                     Config currentConfig = configCache.get(key);
 
                     if (currentConfig == null || newVersion > currentConfig.version()) {
-                        newConfig = new Config(key, newVersion, payload);
+                        newConfig = new Config(key, newVersion, message.payload);
                         configCache.put(key, newConfig);
 
                         LOGGER.info("Updated config '" + key + "' to version " + newVersion);
