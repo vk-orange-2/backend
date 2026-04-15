@@ -208,9 +208,6 @@ public class Client {
 
                 String key = message.key;
                 int newVersion = message.version;
-                // byte[] payload = message.payload != null
-                // ? objectMapper.writeValueAsBytes(message.payload)
-                // : null;
 
                 // Thread-safe version check and update - must be atomic
                 Config newConfig = null;
