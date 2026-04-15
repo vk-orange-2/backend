@@ -21,40 +21,44 @@ public class GlobalExceptionHandler {
         ex.getBindingResult().getFieldErrors().forEach(error ->
                 fieldErrors.put(error.getField(), error.getDefaultMessage()));
 
-        Map<String, Object> body = Map.of(
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
                 "error", Map.of(
                         "code", "VALIDATION_ERROR",
                         "message", "Request payload is invalid",
                         "details", fieldErrors
                 )
-        );
+        ));
+    }
 
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                "error", Map.of(
+                        "code", "BAD_REQUEST",
+                        "message", ex.getMessage()
+                )
+        ));
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<Map<String, Object>> handleMissingParam(
             MissingServletRequestParameterException ex) {
 
-        Map<String, Object> body = Map.of(
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
                 "error", Map.of(
                         "code", "MISSING_PARAMETER",
                         "message", ex.getMessage()
                 )
-        );
-
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+        ));
     }
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(Exception ex) {
-        Map<String, Object> body = Map.of(
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
                 "error", Map.of(
                         "code", "INTERNAL_ERROR",
                         "message", "An unexpected error occurred"
                 )
-        );
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+        ));
     }
 }

@@ -5,6 +5,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import ru.configplatform.configserver.dto.ServiceResponse;
 import ru.configplatform.configserver.service.ConfigService;
 
 import java.util.List;
@@ -17,11 +18,10 @@ public class ServiceController {
     private final ConfigService configService;
 
     /**
-     * GET /v1/services — список всех сервисов, у которых есть хотя бы один конфиг.
+     * GET /v1/services — список всех сервисов
      */
     @GetMapping
-    public ResponseEntity<List<String>> getServices() {
-        List<String> services = configService.getServices();
-        return ResponseEntity.ok(services);
+    public ResponseEntity<List<ServiceResponse>> getServices() {
+        return ResponseEntity.ok(configService.getServices());
     }
 }

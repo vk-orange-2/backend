@@ -1,6 +1,7 @@
 package ru.configplatform.configserver.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -25,6 +26,6 @@ public class CreateConfigRequest {
     @Size(max = 255, message = "key must be at most 255 characters")
     private String key;
 
-    @NotBlank(message = "value is required")
-    private String value;
+    @NotNull(message = "value is required")
+    private Object value;
 }

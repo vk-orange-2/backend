@@ -1,11 +1,11 @@
 server:
-  port: 8080
+  port: 8081
 
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/config_platform
-    username: config_user
-    password: config_pass
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:config_platform}
+    username: ${DB_USER:config_user}
+    password: ${DB_PASSWORD:config_pass}
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5

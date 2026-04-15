@@ -1,4 +1,42 @@
 services:
+
+  # ---- PostgreSQL ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: config-platform-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-config_platform}
+      POSTGRES_USER: ${POSTGRES_USER:-config_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-config_pass}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U config_user -d config_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---- Config Server (Spring Boot) ----
+  config-server:
+    build:
+      context: ./config-server
+      dockerfile: Dockerfile
+    container_name: config-server
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-config_platform}
+      DB_USER: ${POSTGRES_USER:-config_user}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-config_pass}
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---- Centrifugo ----
   centrifugo:
     image: centrifugo/centrifugo:v6.7
     volumes:
@@ -18,7 +56,10 @@ services:
         soft: 65535
         hard: 65535
     depends_on:
-      - centrifugo_redis
+      postgres:
+        condition: service_healthy
+      centrifugo_redis:
+        condition: service_healthy
     deploy:
       replicas: 2
     environment:
@@ -30,6 +71,7 @@ services:
       CENTRIFUGO_ADMIN_PASSWORD: ${CENTRIFUGO_ADMIN_PASSWORD}
       CENTRIFUGO_CONSUMERS_POSTGRES_POSTGRESQL_DSN: ${POSTGRES_DSN}
 
+  # ---- Redis for Centrifugo ----
   centrifugo_redis:
     image: redis:8.6.2-alpine
     volumes:
@@ -41,14 +83,17 @@ services:
       retries: 5
       start_period: 10s
 
+  # ---- Nginx ----
   nginx:
     image: nginx:1.29.8-alpine
     volumes:
       - ./config/nginx:/etc/nginx/templates
     depends_on:
       - centrifugo
+      - config-server
     ports:
       - "8080:80"
 
 volumes:
+  pgdata:
   redis-data:

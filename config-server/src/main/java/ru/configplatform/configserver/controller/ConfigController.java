@@ -11,11 +11,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import ru.configplatform.configserver.dto.ConfigListResponse;
 import ru.configplatform.configserver.dto.ConfigResponse;
 import ru.configplatform.configserver.dto.CreateConfigRequest;
 import ru.configplatform.configserver.service.ConfigService;
-
-import java.util.List;
 
 @RestController
 @RequestMapping("/v1/configs")
@@ -31,14 +30,12 @@ public class ConfigController {
      * Иначе создает новый с version=1
      */
     @PostMapping
-    public ResponseEntity<ConfigResponse> createOrUpdate(
-            @Valid @RequestBody CreateConfigRequest request) {
-
+    public ResponseEntity<ConfigResponse> createOrUpdate(@Valid @RequestBody CreateConfigRequest request) {
         ConfigResponse response = configService.createOrUpdate(request);
-        boolean isNewConfig = response.getVersion() == 1L;
+        boolean isNew = response.getCurrentVersion() == 1;
 
         return ResponseEntity
-                .status(isNewConfig ? HttpStatus.CREATED : HttpStatus.OK)
+                .status(isNew ? HttpStatus.CREATED : HttpStatus.OK)
                 .body(response);
     }
 
@@ -49,11 +46,11 @@ public class ConfigController {
      * Возвращает список конфигов данного сервиса в данном окружении
      */
     @GetMapping
-    public ResponseEntity<List<ConfigResponse>> getConfigs(
+    public ResponseEntity<ConfigListResponse> getConfigs(
             @RequestParam @NotBlank String serviceName,
-            @RequestParam @NotBlank String environment) {
-
-        List<ConfigResponse> configs = configService.getConfigs(serviceName, environment);
-        return ResponseEntity.ok(configs);
+            @RequestParam @NotBlank String environment
+    ) {
+        ConfigListResponse response = configService.getConfigs(serviceName, environment);
+        return ResponseEntity.ok(response);
     }
 }

@@ -2,12 +2,9 @@ package ru.configplatform.configserver.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -21,32 +18,22 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Entity
-@Table(name = "configs")
+@Table(name = "services")
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class ConfigEntity {
+public class ServiceEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "service_id", nullable = false)
-    private ServiceEntity service;
+    @Column(nullable = false, unique = true)
+    private String name;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "environment_id", nullable = false)
-    private EnvironmentEntity environment;
-
-    @Column(name = "config_key", nullable = false)
-    private String configKey;
-
-    @Column(name = "current_version", nullable = false)
-    @Builder.Default
-    private Long currentVersion = 0L;
+    private String description;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
