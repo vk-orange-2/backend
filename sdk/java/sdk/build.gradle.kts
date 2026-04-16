@@ -1,5 +1,6 @@
 plugins {
     `java-library`
+    `maven-publish`
 }
 
 repositories {
@@ -23,4 +24,19 @@ java {
 
 tasks.named<Test>("test") {
     useJUnitPlatform()
+}
+
+group = "ru.itmo.config_streamer"
+version = "0.0.1-SNAPSHOT"
+
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            groupId = "ru.itmo.config_streamer"
+            artifactId = "sdk"
+            version = "1.0"
+
+            from(components["java"])
+        }
+    }
 }
