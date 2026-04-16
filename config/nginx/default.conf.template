@@ -3,6 +3,10 @@ upstream centrifugo_upstream {
     server centrifugo:8000;
 }
 
+upstream config_server_upstream {
+    server config-server:8081;
+}
+
 map $http_upgrade $connection_upgrade {
     default upgrade;
     '' close;
@@ -13,6 +17,7 @@ server {
     listen [::]:80;
     server_name localhost;
 
+    # --- Centrifugo WebSocket ---
     location /centrifugo/ {
         rewrite ^/centrifugo/(.*) /$1 break;
         proxy_pass http://centrifugo_upstream;
@@ -37,8 +42,12 @@ server {
         proxy_set_header Connection $connection_upgrade;
     }
 
-    location /v1/configs {
-        default_type application/json;
-        return 200 '{"configs":[{"configKey":"example-config","currentVersion":1,"latestVersion":{"payload":{"key":"value"}}}]}';
+    # --- Config Server API ---
+    location /v1/ {
+        proxy_pass http://config_server_upstream;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
