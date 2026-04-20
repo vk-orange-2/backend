@@ -13,11 +13,17 @@ import java.util.UUID;
 @Repository
 public interface ConfigRepository extends JpaRepository<ConfigEntity, UUID> {
 
-    List<ConfigEntity> findByServiceAndEnvironment(ServiceEntity service, EnvironmentEntity environment);
+    List<ConfigEntity> findByServiceAndEnvironmentAndStatus(
+            ServiceEntity service,
+            EnvironmentEntity environment,
+            String status
+    );
 
     Optional<ConfigEntity> findByServiceAndEnvironmentAndConfigKey(
             ServiceEntity service,
             EnvironmentEntity environment,
             String configKey
     );
+
+    Optional<ConfigEntity> findByIdAndStatus(UUID id, String status);
 }
