@@ -21,3 +21,7 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+config_platform:
+  jwt:
+    signingKey: ${JWT_SECRET:1234567890abcdefghijklmopqrstuxyz}
