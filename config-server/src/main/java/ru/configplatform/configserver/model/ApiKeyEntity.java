@@ -30,6 +30,6 @@ public class ApiKeyEntity {
     @Column(name = "environment_id", nullable = false, updatable = false)
     private Short environmentId;
 
-    @Column(name = "value", nullable = false)
+    @Column(name = "encrypted_key", nullable = false)
     private String value;
 }

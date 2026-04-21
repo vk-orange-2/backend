@@ -1,13 +1,18 @@
 package ru.configplatform.configserver.service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.Date;
 import java.util.UUID;
 
+import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import io.jsonwebtoken.Jwts;
@@ -21,25 +26,76 @@ import ru.configplatform.configserver.repository.ServiceRepository;
 @Service
 public class ApiKeyService {
     private static final long JWT_EXPIRATION_MILLISECONDS = 30 * 60 * 1000; // 30 minutes
+    private static final int GCM_IV_LENGTH = 12; // 96 bits for GCM IV
+    private static final int GCM_TAG_LENGTH = 128; // 128 bits authentication tag
+    private static final String ALGORITHM = "AES/GCM/NoPadding";
 
     private final ApiKeyRepository repo;
     private final EnvironmentRepository envRepo;
     private final ServiceRepository serviceRepo;
 
-    private final Argon2PasswordEncoder argonEncoder = new Argon2PasswordEncoder(16, 32, 1, 60000, 10);
-
+    private final SecretKey aesEncryptionKey;
     private final String jwtSigningKey;
+    private final SecureRandom secureRandom = new SecureRandom();
 
     @Autowired
     public ApiKeyService(
             final ApiKeyRepository repo,
             final EnvironmentRepository envRepo,
             final ServiceRepository serviceRepo,
-            @Value("${config_platform.jwt.signingKey}") final String jwtSigningKey) {
+            @Value("${config_platform.jwt.signingKey}") final String jwtSigningKey,
+            @Value("${config_platform.apiKey.encryptionKey}") final String encryptionKeyBase64) {
         this.repo = repo;
         this.envRepo = envRepo;
         this.serviceRepo = serviceRepo;
         this.jwtSigningKey = jwtSigningKey;
+        // Decode Base64 key and create AES key (256-bit = 32 bytes)
+        byte[] keyBytes = Base64.getDecoder().decode(encryptionKeyBase64);
+        this.aesEncryptionKey = new SecretKeySpec(keyBytes, "AES");
+    }
+
+    private String encrypt(String plaintext) {
+        try {
+            // Generate random IV
+            byte[] iv = new byte[GCM_IV_LENGTH];
+            secureRandom.nextBytes(iv);
+
+            Cipher cipher = Cipher.getInstance(ALGORITHM);
+            GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+            cipher.init(Cipher.ENCRYPT_MODE, aesEncryptionKey, parameterSpec);
+
+            byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
+
+            // Prepend IV to ciphertext and encode as Base64
+            byte[] combined = new byte[iv.length + ciphertext.length];
+            System.arraycopy(iv, 0, combined, 0, iv.length);
+            System.arraycopy(ciphertext, 0, combined, iv.length, ciphertext.length);
+
+            return Base64.getEncoder().encodeToString(combined);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to encrypt API key", e);
+        }
+    }
+
+    private String decrypt(String encrypted) {
+        try {
+            byte[] combined = Base64.getDecoder().decode(encrypted);
+
+            // Extract IV and ciphertext
+            byte[] iv = new byte[GCM_IV_LENGTH];
+            byte[] ciphertext = new byte[combined.length - GCM_IV_LENGTH];
+            System.arraycopy(combined, 0, iv, 0, GCM_IV_LENGTH);
+            System.arraycopy(combined, GCM_IV_LENGTH, ciphertext, 0, ciphertext.length);
+
+            Cipher cipher = Cipher.getInstance(ALGORITHM);
+            GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+            cipher.init(Cipher.DECRYPT_MODE, aesEncryptionKey, parameterSpec);
+
+            byte[] plaintext = cipher.doFinal(ciphertext);
+            return new String(plaintext, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to decrypt API key", e);
+        }
     }
 
     public String getJwtByApiKey(String apiKeyValue, UUID serviceId, short environmentId) {
@@ -52,8 +108,9 @@ public class ApiKeyService {
 
         var apiKey = apiKeyOpt.get();
 
-        // Verify the API key using Argon2 matches()
-        if (!argonEncoder.matches(apiKeyValue, apiKey.getValue())) {
+        // Decrypt the stored key and compare
+        String decryptedKey = decrypt(apiKey.getValue());
+        if (!apiKeyValue.equals(decryptedKey)) {
             return null;
         }
 
@@ -76,26 +133,37 @@ public class ApiKeyService {
                 .compact();
     }
 
+    public String getApiKey(UUID serviceId, short environmentId) {
+        var apiKeyId = new ApiKeyId(serviceId, environmentId);
+        var apiKeyOpt = repo.findById(apiKeyId);
+
+        if (apiKeyOpt.isEmpty()) {
+            return null;
+        }
+
+        return decrypt(apiKeyOpt.get().getValue());
+    }
+
     public String createOrResetApiKey(UUID serviceId, short environmentId) {
         var newValue = UUID.randomUUID().toString();
 
         var apiKeyId = new ApiKeyId(serviceId, environmentId);
         var apiKeyOpt = repo.findById(apiKeyId);
 
-        var encodedValue = argonEncoder.encode(newValue);
+        var encryptedValue = encrypt(newValue);
 
         if (apiKeyOpt.isEmpty()) {
             var newApiKey = ApiKeyEntity.builder()
                     .serviceId(serviceId)
                     .environmentId(environmentId)
-                    .value(encodedValue)
+                    .value(encryptedValue)
                     .build();
             repo.saveAndFlush(newApiKey);
             return newValue;
         }
 
         var apiKey = apiKeyOpt.get();
-        apiKey.setValue(encodedValue);
+        apiKey.setValue(encryptedValue);
         repo.saveAndFlush(apiKey);
 
         return newValue;

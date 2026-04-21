@@ -20,3 +20,9 @@ spring:
 
   flyway:
     enabled: false
+
+config_platform:
+  jwt:
+    signingKey: test-jwt-signing-key-for-testing-purposes-only
+  apiKey:
+    encryptionKey: MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=
