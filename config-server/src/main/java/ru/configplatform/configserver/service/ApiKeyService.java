@@ -98,7 +98,7 @@ public class ApiKeyService {
         }
     }
 
-    public String getJwtByApiKey(String apiKeyValue, UUID serviceId, short environmentId) {
+    public String getJwtByApiKey(String apiKeyValue, UUID serviceId, short environmentId, String instanceName) {
         var apiKeyId = new ApiKeyId(serviceId, environmentId);
         var apiKeyOpt = repo.findById(apiKeyId);
 
@@ -124,8 +124,12 @@ public class ApiKeyService {
 
         var now = new Date();
 
+        String subjectName = instanceName == null
+                ? UUID.randomUUID().toString()
+                : instanceName;
+
         return Jwts.builder()
-                .subject(channelName)
+                .subject(service.getName() + ":" + env.getCode() + ":" + subjectName)
                 .claim("channel", channelName)
                 .issuedAt(now)
                 .expiration(new Date(now.getTime() + JWT_EXPIRATION_MILLISECONDS))
@@ -141,7 +145,7 @@ public class ApiKeyService {
             return null;
         }
 
-        return decrypt(apiKeyOpt.get().getValue());
+        return buildApiKeyClientValue(serviceId, environmentId, decrypt(apiKeyOpt.get().getValue()));
     }
 
     public String createOrResetApiKey(UUID serviceId, short environmentId) {
@@ -166,6 +170,10 @@ public class ApiKeyService {
         apiKey.setValue(encryptedValue);
         repo.saveAndFlush(apiKey);
 
-        return newValue;
+        return buildApiKeyClientValue(serviceId, environmentId, newValue);
+    }
+
+    private String buildApiKeyClientValue(UUID serviceId, short environmentId, String apiKey) {
+        return serviceId.toString() + ":" + environmentId + ":" + apiKey;
     }
 }

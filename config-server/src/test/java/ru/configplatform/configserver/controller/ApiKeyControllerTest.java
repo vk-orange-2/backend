@@ -86,7 +86,7 @@ class ApiKeyControllerTest {
                 .param("serviceId", testServiceId.toString())
                 .param("environmentId", String.valueOf(DEV_ENV_ID)))
                 .andExpect(status().isOk())
-                .andExpect(content().string(apiKey));
+                .andExpect(content().string(testServiceId.toString() + ":" + DEV_ENV_ID + ":" + apiKey));
     }
 
     @Test
@@ -116,7 +116,7 @@ class ApiKeyControllerTest {
                 .andReturn().getResponse().getContentAsString();
 
         // Keys should be different
-        assertThat(firstKey, not(equalTo(secondKey)));
+        assertThat(firstKey, not(equalTo(testServiceId.toString() + ":" + DEV_ENV_ID + ":" + secondKey)));
     }
 
     @Test

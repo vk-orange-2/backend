@@ -29,8 +29,9 @@ public class ApiKeyController {
     String exchange(
             @RequestParam("apiKey") String apiKey,
             @RequestParam("serviceId") UUID serviceId,
-            @RequestParam("environmentId") short environmentId) {
-        String jwt = service.getJwtByApiKey(apiKey, serviceId, environmentId);
+            @RequestParam("environmentId") short environmentId,
+            @RequestParam(value = "instanceName", required = false) String instanceName) {
+        String jwt = service.getJwtByApiKey(apiKey, serviceId, environmentId, instanceName);
         if (jwt == null) {
             return "";
         }

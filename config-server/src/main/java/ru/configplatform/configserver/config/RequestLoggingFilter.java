@@ -24,8 +24,7 @@ public class RequestLoggingFilter implements Filter {
 
         log.info("request: {} {}?{}",
                 httpRequest.getMethod(),
-                httpRequest.getRequestURI(),
-                httpRequest.getQueryString());
+                httpRequest.getRequestURI());
 
         chain.doFilter(request, response);
     }
