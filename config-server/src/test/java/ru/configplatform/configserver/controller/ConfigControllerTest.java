@@ -12,6 +12,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.CreateConfigRequest;
 import ru.configplatform.configserver.dto.DeleteConfigRequest;
+import ru.configplatform.configserver.dto.RollbackRequest;
 import ru.configplatform.configserver.dto.UpdateConfigRequest;
 
 import java.util.Map;
@@ -78,6 +79,23 @@ class ConfigControllerTest {
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.isSecret", is(true)));
+    }
+
+    @Test
+    void shouldCreateConfigWithAuthor() throws Exception {
+        CreateConfigRequest request = CreateConfigRequest.builder()
+                .service("test-author-svc")
+                .env("dev")
+                .key("author-key")
+                .value(Map.of("a", 1))
+                .build();
+
+        mockMvc.perform(post("/v1/configs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "test-user")
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.currentVersion", is(1)));
     }
 
     @Test
@@ -199,6 +217,51 @@ class ConfigControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(update)))
                 .andExpect(status().isNotFound());
+    }
+
+
+    @Test
+    void shouldReturnVersionHistory() throws Exception {
+        String id = createConfigAndReturnId("test-hist-svc", "dev", "hist-key",
+                Map.of("v", 1));
+
+        UpdateConfigRequest update = UpdateConfigRequest.builder()
+                .value(Map.of("v", 2))
+                .expectedVersion(1L).build();
+
+        mockMvc.perform(put("/v1/configs/" + id)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", "editor")
+                .content(objectMapper.writeValueAsString(update)));
+
+        mockMvc.perform(get("/v1/configs/" + id + "/versions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.versions", hasSize(2)))
+                .andExpect(jsonPath("$.versions[0].version", is(2)))
+                .andExpect(jsonPath("$.versions[0].changeType", is("update")))
+                .andExpect(jsonPath("$.versions[0].author", is("editor")))
+                .andExpect(jsonPath("$.versions[1].version", is(1)))
+                .andExpect(jsonPath("$.versions[1].changeType", is("create")));
+    }
+
+    @Test
+    void shouldReturnSpecificVersion() throws Exception {
+        String id = createConfigAndReturnId("test-spec-svc", "dev", "spec-key",
+                Map.of("original", true));
+
+        mockMvc.perform(get("/v1/configs/" + id + "/versions/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version", is(1)))
+                .andExpect(jsonPath("$.payload.original", is(true)));
+    }
+
+    @Test
+    void shouldReturn404ForNonexistentVersion() throws Exception {
+        String id = createConfigAndReturnId("test-ver404-svc", "dev", "ver404-key", "val");
+
+        mockMvc.perform(get("/v1/configs/" + id + "/versions/999"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code", is("VERSION_NOT_FOUND")));
     }
 
     @Test
@@ -347,6 +410,104 @@ class ConfigControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(deleteReq)))
                 .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void shouldReturnDiffBetweenVersions() throws Exception {
+        String id = createConfigAndReturnId("test-diff-svc", "dev", "diff-key",
+                Map.of("a", 1, "b", 2));
+
+        UpdateConfigRequest update = UpdateConfigRequest.builder()
+                .value(Map.of("a", 1, "c", 3))
+                .expectedVersion(1L).build();
+
+        mockMvc.perform(put("/v1/configs/" + id)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)));
+
+        mockMvc.perform(get("/v1/configs/" + id + "/diff")
+                        .param("from", "1")
+                        .param("to", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.versionFrom", is(1)))
+                .andExpect(jsonPath("$.versionTo", is(2)))
+                .andExpect(jsonPath("$.added.c", is(3)))
+                .andExpect(jsonPath("$.removed.b", is(2)))
+                .andExpect(jsonPath("$.changed").isEmpty());
+    }
+
+    @Test
+    void shouldRollbackToTargetVersion() throws Exception {
+        String id = createConfigAndReturnId("test-rb-svc", "dev", "rb-key",
+                Map.of("env", "original"));
+
+        UpdateConfigRequest update = UpdateConfigRequest.builder()
+                .value(Map.of("env", "modified"))
+                .expectedVersion(1L).build();
+
+        mockMvc.perform(put("/v1/configs/" + id)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)));
+
+        RollbackRequest rollback = RollbackRequest.builder()
+                .targetVersion(1L)
+                .expectedVersion(2L)
+                .comment("reverting change")
+                .build();
+
+        mockMvc.perform(post("/v1/configs/" + id + "/rollback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
+                        .content(objectMapper.writeValueAsString(rollback)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentVersion", is(3)))
+                .andExpect(jsonPath("$.latestVersion.payload.env", is("original")));
+
+        mockMvc.perform(get("/v1/configs/" + id + "/versions"))
+                .andExpect(jsonPath("$.versions", hasSize(3)))
+                .andExpect(jsonPath("$.versions[0].changeType", is("rollback")))
+                .andExpect(jsonPath("$.versions[0].author", is("deployer")));
+    }
+
+    @Test
+    void shouldReturn409OnRollbackWithStaleVersion() throws Exception {
+        String id = createConfigAndReturnId("test-rb409-svc", "dev", "rb409-key", "val");
+
+        RollbackRequest rollback = RollbackRequest.builder()
+                .targetVersion(1L)
+                .expectedVersion(5L) // stale
+                .build();
+
+        mockMvc.perform(post("/v1/configs/" + id + "/rollback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rollback)))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void shouldReturn404OnRollbackToNonexistentVersion() throws Exception {
+        String id = createConfigAndReturnId("test-rb404-svc", "dev", "rb404-key", "val");
+
+        RollbackRequest rollback = RollbackRequest.builder()
+                .targetVersion(999L)
+                .expectedVersion(1L)
+                .build();
+
+        mockMvc.perform(post("/v1/configs/" + id + "/rollback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rollback)))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void shouldReturn400ForMissingKey() throws Exception {
+        CreateConfigRequest request = CreateConfigRequest.builder()
+                .service("svc").env("dev").key("").value("val").build();
+
+        mockMvc.perform(post("/v1/configs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest());
     }
 
     private void createConfig(String service, String env, String key, Object value) throws Exception {

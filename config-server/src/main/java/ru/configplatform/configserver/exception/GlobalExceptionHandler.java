@@ -54,6 +54,16 @@ public class GlobalExceptionHandler {
         ));
     }
 
+    @ExceptionHandler(VersionNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleVersionNotFound(VersionNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                "error", Map.of(
+                        "code", "VERSION_NOT_FOUND",
+                        "message", ex.getMessage()
+                )
+        ));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
