@@ -22,7 +22,7 @@ public class RequestLoggingFilter implements Filter {
 
         HttpServletRequest httpRequest = (HttpServletRequest) request;
 
-        log.info("request: {} {}?{}",
+        log.info("request: {} {}",
                 httpRequest.getMethod(),
                 httpRequest.getRequestURI());
 

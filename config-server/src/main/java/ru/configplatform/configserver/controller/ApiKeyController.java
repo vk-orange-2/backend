@@ -19,7 +19,7 @@ public class ApiKeyController {
     ApiKeyService service;
 
     @PutMapping
-    String createOrRefreshToken(
+    String createOrRefreshApiKey(
             @RequestParam("serviceId") UUID serviceId,
             @RequestParam("environmentId") short environmentId) {
         return service.createOrResetApiKey(serviceId, environmentId);
