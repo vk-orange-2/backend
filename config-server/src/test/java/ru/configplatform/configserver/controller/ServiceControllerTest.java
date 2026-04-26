@@ -1,7 +1,6 @@
 package ru.configplatform.configserver.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -11,10 +10,6 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.CreateConfigRequest;
-import ru.configplatform.configserver.model.EnvironmentEntity;
-import ru.configplatform.configserver.repository.EnvironmentRepository;
-
-import java.util.List;
 
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
@@ -34,25 +29,6 @@ class ServiceControllerTest {
 
     @Autowired
     private ObjectMapper objectMapper;
-
-    @Autowired
-    private EnvironmentRepository environmentRepository;
-
-    @BeforeEach
-    void setUp() {
-        short id = 1;
-        for (String code : List.of("dev", "stage", "prod")) {
-            if (environmentRepository.findByCode(code).isEmpty()) {
-                EnvironmentEntity env = EnvironmentEntity.builder()
-                        .id(id)
-                        .code(code)
-                        .name(code.toUpperCase())
-                        .build();
-                environmentRepository.save(env);
-                id++;
-            }
-        }
-    }
 
     @Test
     void shouldReturnServicesAfterCreatingConfigs() throws Exception {

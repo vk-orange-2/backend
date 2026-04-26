@@ -48,6 +48,17 @@ public class ConfigEntity {
     @Builder.Default
     private Long currentVersion = 0L;
 
+    @Column(name = "is_secret", nullable = false)
+    @Builder.Default
+    private Boolean isSecret = false;
+
+    @Column(nullable = false)
+    @Builder.Default
+    private String status = "active";
+
+    @Column(name = "deleted_at")
+    private Instant deletedAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -64,5 +75,14 @@ public class ConfigEntity {
     @PreUpdate
     public void preUpdate() {
         this.updatedAt = Instant.now();
+    }
+
+    public boolean isActive() {
+        return "active".equals(this.status);
+    }
+
+    public void markDeleted() {
+        this.status = "deleted";
+        this.deletedAt = Instant.now();
     }
 }

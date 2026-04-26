@@ -13,6 +13,20 @@ import java.util.Map;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(VersionConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleVersionConflict(
+            VersionConflictException ex) {
+
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "error", Map.of(
+                        "code", "VERSION_CONFLICT",
+                        "message", ex.getMessage(),
+                        "expectedVersion", ex.getExpectedVersion(),
+                        "actualVersion", ex.getActualVersion()
+                )
+        ));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> handleValidation(
             MethodArgumentNotValidException ex) {
@@ -26,6 +40,16 @@ public class GlobalExceptionHandler {
                         "code", "VALIDATION_ERROR",
                         "message", "Request payload is invalid",
                         "details", fieldErrors
+                )
+        ));
+    }
+
+    @ExceptionHandler(ConfigNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleNotFound(ConfigNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                "error", Map.of(
+                        "code", "NOT_FOUND",
+                        "message", ex.getMessage()
                 )
         ));
     }
