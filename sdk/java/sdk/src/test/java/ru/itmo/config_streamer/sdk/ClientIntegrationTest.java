@@ -32,7 +32,7 @@ class ClientIntegrationTest {
 
     @BeforeAll
     static void setup() {
-        apiKey = System.getenv("API_KEY");
+        apiKey = System.getenv("SDK_TEST_API_KEY");
         centrifugoApiKey = System.getenv("CENTRIFUGO_API_KEY");
     }
 
@@ -127,15 +127,9 @@ class ClientIntegrationTest {
         // Wait a bit for subscription to be ready
         Thread.sleep(1000);
 
-        // Extract channel from API key (we need service name and env name from the key)
-        // The channel format is "service:<service_name>:<env_code>"
-        // For this test, we'll construct the channel from the API key's serviceId and environmentId
-        // Note: This requires knowing the service name and env name, which are in the JWT
-        // For simplicity, we'll use a known channel pattern
-        String[] keyParts = apiKey.split(":", 3);
-        String serviceId = keyParts[0];
-        String envId = keyParts[1];
-        String channel = "service:" + serviceId + ":" + envId;
+        // Channel format is "service:<service_name>:<env_code>"
+        // From V1_2__test_init_data.sql: service name = 'client-test-service', env = 'dev'
+        String channel = "service:client-test-service:dev";
 
         // When: We publish a config to Centrifugo
         String publishPayload = "{\"key\":\"published-config\",\"version\":42,\"payload\":{\"data\":\"test-value\"}}";

@@ -25,17 +25,30 @@ public class ApiKeyController {
         return service.createOrResetApiKey(serviceId, environmentId);
     }
 
-    @GetMapping("/exchange")
-    String exchange(
+    @GetMapping("/connection-token")
+    ResponseEntity<String> getConnectionToken(
             @RequestParam("apiKey") String apiKey,
             @RequestParam("serviceId") UUID serviceId,
             @RequestParam("environmentId") short environmentId,
             @RequestParam(value = "instanceName", required = false) String instanceName) {
-        String jwt = service.getJwtByApiKey(apiKey, serviceId, environmentId, instanceName);
+        String jwt = service.getConnectionJwt(apiKey, serviceId, environmentId, instanceName);
         if (jwt == null) {
-            return "";
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
-        return jwt;
+        return ResponseEntity.ok(jwt);
+    }
+
+    @GetMapping("/subscription-token")
+    ResponseEntity<String> getSubscriptionToken(
+            @RequestParam("apiKey") String apiKey,
+            @RequestParam("serviceId") UUID serviceId,
+            @RequestParam("environmentId") short environmentId,
+            @RequestParam(value = "instanceName", required = false) String instanceName) {
+        String jwt = service.getSubscriptionJwt(apiKey, serviceId, environmentId, instanceName);
+        if (jwt == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        return ResponseEntity.ok(jwt);
     }
 
     @GetMapping

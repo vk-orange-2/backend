@@ -109,20 +109,30 @@ public class Client {
      * "payload": "DATA"}
      */
     public void run() {
-        // First, fetch initial JWT token synchronously to extract channel info
-        String initialToken = fetchJwtToken();
-        if (initialToken == null) {
-            throw new RuntimeException("Failed to obtain initial JWT token");
+        // First, fetch connection token synchronously
+        String connectionToken = fetchConnectionToken();
+        if (connectionToken == null) {
+            throw new RuntimeException("Failed to obtain connection JWT token. Check API key and server availability.");
         }
 
-        // Extract channel from JWT to get serviceName and envName
-        extractChannelFromJwt(initialToken);
-
-        if (serviceName == null || envName == null || channel == null) {
-            throw new RuntimeException("Failed to extract channel info from JWT token");
+        // Fetch subscription token and extract channel from it
+        String subscriptionToken = fetchSubscriptionToken();
+        if (subscriptionToken == null) {
+            throw new RuntimeException("Failed to obtain subscription JWT token. Check API key and server availability.");
         }
 
-        connectToCentrifugo(initialToken);
+        // Extract channel from subscription JWT
+        extractChannelFromJwt(subscriptionToken);
+
+        if (channel == null) {
+            throw new RuntimeException("Failed to extract channel from subscription JWT token.");
+        }
+
+        if (serviceName == null || envName == null) {
+            throw new RuntimeException("Failed to parse channel info from JWT: " + channel);
+        }
+
+        connectToCentrifugo(connectionToken, subscriptionToken);
     }
 
     public Config get(String key) {
@@ -150,14 +160,14 @@ public class Client {
     }
 
     /**
-     * Fetches a JWT token from the config server using the API key.
-     * This token is used for both Centrifugo connection and subscription authentication.
+     * Fetches a connection JWT token from the config server.
+     * This token does NOT contain channel claim and is used for Centrifugo connection.
      *
      * @return the JWT token string, or null if the request failed
      */
-    private String fetchJwtToken() {
+    private String fetchConnectionToken() {
         try {
-            String url = baseUrl + "/v1/api-keys/exchange" +
+            String url = baseUrl + "/v1/api-keys/connection-token" +
                     "?apiKey=" + URLEncoder.encode(apiKey, StandardCharsets.UTF_8) +
                     "&serviceId=" + serviceId +
                     "&environmentId=" + environmentId +
@@ -174,15 +184,55 @@ public class Client {
             if (response.statusCode() == 200) {
                 String token = response.body();
                 if (token != null && !token.isEmpty()) {
-                    LOGGER.fine("Successfully obtained JWT token");
+                    LOGGER.fine("Successfully obtained connection JWT token");
                     return token;
                 }
             }
 
-            LOGGER.warning("Failed to obtain JWT token. Status: " + response.statusCode());
+            LOGGER.warning("Failed to obtain connection JWT token. Status: " + response.statusCode() +
+                    ", body: " + response.body());
             return null;
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error fetching JWT token", e);
+            LOGGER.log(Level.SEVERE, "Error fetching connection JWT token", e);
+            return null;
+        }
+    }
+
+    /**
+     * Fetches a subscription JWT token from the config server.
+     * This token contains channel claim and is used for Centrifugo subscription.
+     *
+     * @return the JWT token string, or null if the request failed
+     */
+    private String fetchSubscriptionToken() {
+        try {
+            String url = baseUrl + "/v1/api-keys/subscription-token" +
+                    "?apiKey=" + URLEncoder.encode(apiKey, StandardCharsets.UTF_8) +
+                    "&serviceId=" + serviceId +
+                    "&environmentId=" + environmentId +
+                    "&instanceName=" + URLEncoder.encode(instanceName, StandardCharsets.UTF_8);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                String token = response.body();
+                if (token != null && !token.isEmpty()) {
+                    LOGGER.fine("Successfully obtained subscription JWT token");
+                    return token;
+                }
+            }
+
+            LOGGER.warning("Failed to obtain subscription JWT token. Status: " + response.statusCode() +
+                    ", body: " + response.body());
+            return null;
+        } catch (Exception e) {
+            LOGGER.log(Level.SEVERE, "Error fetching subscription JWT token", e);
             return null;
         }
     }
@@ -278,19 +328,21 @@ public class Client {
         }
     }
 
-    private void connectToCentrifugo(String initialToken) {
+    private void connectToCentrifugo(String connectionToken, String subscriptionToken) {
         try {
-                Options options = new Options();
+            Options options = new Options();
             // Set initial token for connection
-            options.setToken(initialToken);
+            options.setToken(connectionToken);
             // Set token getter for connection-level authentication (for refresh)
             options.setTokenGetter(new ConnectionTokenGetter() {
                 @Override
                 public void getConnectionToken(ConnectionTokenEvent event, TokenCallback cb) {
-                    String token = fetchJwtToken();
+                    String token = fetchConnectionToken();
                     if (token == null) {
-                        cb.Done(new RuntimeException("Failed to obtain JWT token for connection"), null);
+                        LOGGER.severe("Failed to refresh connection JWT token");
+                        cb.Done(new RuntimeException("Failed to obtain connection JWT token"), null);
                     } else {
+                        LOGGER.fine("Refreshed connection JWT token");
                         cb.Done(null, token);
                     }
                 }
@@ -314,15 +366,17 @@ public class Client {
             // Create subscription options with token getter for subscription-level authentication
             SubscriptionOptions subOptions = new SubscriptionOptions();
             // Set initial token
-            subOptions.setToken(initialToken);
+            subOptions.setToken(subscriptionToken);
             // Set token getter for automatic refresh
             subOptions.setTokenGetter(new SubscriptionTokenGetter() {
                 @Override
                 public void getSubscriptionToken(SubscriptionTokenEvent event, TokenCallback cb) {
-                    String token = fetchJwtToken();
+                    String token = fetchSubscriptionToken();
                     if (token == null) {
-                        cb.Done(new RuntimeException("Failed to obtain JWT token for subscription"), null);
+                        LOGGER.severe("Failed to refresh subscription JWT token");
+                        cb.Done(new RuntimeException("Failed to obtain subscription JWT token"), null);
                     } else {
+                        LOGGER.fine("Refreshed subscription JWT token");
                         cb.Done(null, token);
                     }
                 }
@@ -335,13 +389,14 @@ public class Client {
                 }
             };
 
-            // Use the channel extracted from JWT
+            // Use the channel extracted from subscription JWT
             Subscription subscription = centrifugoClient.newSubscription(channel, subOptions, subListener);
             subscription.subscribe();
 
             LOGGER.info("Connected to Centrifugo and subscribed to channel: " + channel);
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error connecting to Centrifugo", e);
+            throw new RuntimeException("Failed to connect to Centrifugo: " + e.getMessage(), e);
         }
     }
 

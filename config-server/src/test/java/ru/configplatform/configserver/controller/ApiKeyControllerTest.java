@@ -120,7 +120,7 @@ class ApiKeyControllerTest {
     }
 
     @Test
-    void shouldExchangeValidApiKeyForJwt() throws Exception {
+    void shouldGetConnectionTokenForValidApiKey() throws Exception {
         // Create API key
         String apiKey = mockMvc.perform(put("/v1/api-keys")
                 .param("serviceId", testServiceId.toString())
@@ -128,8 +128,8 @@ class ApiKeyControllerTest {
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
-        // Exchange for JWT
-        mockMvc.perform(get("/v1/api-keys/exchange")
+        // Get connection token
+        mockMvc.perform(get("/v1/api-keys/connection-token")
                 .param("apiKey", apiKey)
                 .param("serviceId", testServiceId.toString())
                 .param("environmentId", String.valueOf(DEV_ENV_ID)))
@@ -138,32 +138,75 @@ class ApiKeyControllerTest {
     }
 
     @Test
-    void shouldReturnEmptyForInvalidApiKey() throws Exception {
+    void shouldGetSubscriptionTokenForValidApiKey() throws Exception {
+        // Create API key
+        String apiKey = mockMvc.perform(put("/v1/api-keys")
+                .param("serviceId", testServiceId.toString())
+                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        // Get subscription token
+        mockMvc.perform(get("/v1/api-keys/subscription-token")
+                .param("apiKey", apiKey)
+                .param("serviceId", testServiceId.toString())
+                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", not(emptyString())));
+    }
+
+    @Test
+    void shouldReturn401ForInvalidApiKeyConnectionToken() throws Exception {
         // Create a key first (so the record exists)
         mockMvc.perform(put("/v1/api-keys")
                 .param("serviceId", testServiceId.toString())
                 .param("environmentId", String.valueOf(DEV_ENV_ID)))
                 .andExpect(status().isOk());
 
-        // Try to exchange with wrong API key
-        mockMvc.perform(get("/v1/api-keys/exchange")
+        // Try to get connection token with wrong API key
+        mockMvc.perform(get("/v1/api-keys/connection-token")
                 .param("apiKey", "invalid-api-key")
                 .param("serviceId", testServiceId.toString())
                 .param("environmentId", String.valueOf(DEV_ENV_ID)))
-                .andExpect(status().isOk())
-                .andExpect(content().string(""));
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
-    void shouldReturnEmptyForNonExistentService() throws Exception {
+    void shouldReturn401ForInvalidApiKeySubscriptionToken() throws Exception {
+        // Create a key first (so the record exists)
+        mockMvc.perform(put("/v1/api-keys")
+                .param("serviceId", testServiceId.toString())
+                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                .andExpect(status().isOk());
+
+        // Try to get subscription token with wrong API key
+        mockMvc.perform(get("/v1/api-keys/subscription-token")
+                .param("apiKey", "invalid-api-key")
+                .param("serviceId", testServiceId.toString())
+                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void shouldReturn401ForNonExistentServiceConnectionToken() throws Exception {
         UUID randomServiceId = UUID.randomUUID();
 
-        mockMvc.perform(get("/v1/api-keys/exchange")
+        mockMvc.perform(get("/v1/api-keys/connection-token")
                 .param("apiKey", "any-key")
                 .param("serviceId", randomServiceId.toString())
                 .param("environmentId", String.valueOf(DEV_ENV_ID)))
-                .andExpect(status().isOk())
-                .andExpect(content().string(""));
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void shouldReturn401ForNonExistentServiceSubscriptionToken() throws Exception {
+        UUID randomServiceId = UUID.randomUUID();
+
+        mockMvc.perform(get("/v1/api-keys/subscription-token")
+                .param("apiKey", "any-key")
+                .param("serviceId", randomServiceId.toString())
+                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

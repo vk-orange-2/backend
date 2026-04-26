@@ -44,14 +44,12 @@ public class ApiKeyService {
             final EnvironmentRepository envRepo,
             final ServiceRepository serviceRepo,
             @Value("${config_platform.jwt.signingKey}") final String jwtSigningKey,
-            @Value("${config_platform.apiKey.encryptionKey}") final String encryptionKeyBase64) {
+            @Value("${config_platform.apiKey.encryptionKey}") final String encryptionKey) {
         this.repo = repo;
         this.envRepo = envRepo;
         this.serviceRepo = serviceRepo;
         this.jwtSigningKey = jwtSigningKey;
-        // Decode Base64 key and create AES key (256-bit = 32 bytes)
-        byte[] keyBytes = Base64.getDecoder().decode(encryptionKeyBase64);
-        this.aesEncryptionKey = new SecretKeySpec(keyBytes, "AES");
+        this.aesEncryptionKey = new SecretKeySpec(encryptionKey.getBytes(), "AES");
     }
 
     private String encrypt(String plaintext) {
@@ -98,7 +96,11 @@ public class ApiKeyService {
         }
     }
 
-    public String getJwtByApiKey(String apiKeyValue, UUID serviceId, short environmentId, String instanceName) {
+    /**
+     * Validates API key and returns service/env info if valid.
+     * Shared validation logic for both connection and subscription JWT generation.
+     */
+    private ValidatedApiKey validateApiKey(String apiKeyValue, UUID serviceId, short environmentId) {
         var apiKeyId = new ApiKeyId(serviceId, environmentId);
         var apiKeyOpt = repo.findById(apiKeyId);
 
@@ -115,27 +117,59 @@ public class ApiKeyService {
         }
 
         var service = serviceRepo.findById(apiKey.getServiceId()).orElseThrow();
-
         var env = envRepo.findById(apiKey.getEnvironmentId()).orElseThrow();
 
-        String channelName = "service:" + service.getName() + ":" + env.getCode();
+        return new ValidatedApiKey(service.getName(), env.getCode());
+    }
+
+    /**
+     * Generates a connection JWT token without channel claim.
+     * Used for establishing Centrifugo connection.
+     */
+    public String getConnectionJwt(String apiKeyValue, UUID serviceId, short environmentId, String instanceName) {
+        ValidatedApiKey validated = validateApiKey(apiKeyValue, serviceId, environmentId);
+        if (validated == null) {
+            return null;
+        }
 
         SecretKey hmacKey = Keys.hmacShaKeyFor(jwtSigningKey.getBytes());
-
         var now = new Date();
-
-        String subjectName = instanceName == null
-                ? UUID.randomUUID().toString()
-                : instanceName;
+        String subjectName = instanceName == null ? UUID.randomUUID().toString() : instanceName;
 
         return Jwts.builder()
-                .subject(service.getName() + ":" + env.getCode() + ":" + subjectName)
+                .subject(validated.serviceName() + ":" + validated.envCode() + ":" + subjectName)
+                .issuedAt(now)
+                .expiration(new Date(now.getTime() + JWT_EXPIRATION_MILLISECONDS))
+                .signWith(hmacKey)
+                .compact();
+    }
+
+    /**
+     * Generates a subscription JWT token with channel claim.
+     * Used for subscribing to a specific Centrifugo channel.
+     */
+    public String getSubscriptionJwt(String apiKeyValue, UUID serviceId, short environmentId, String instanceName) {
+        ValidatedApiKey validated = validateApiKey(apiKeyValue, serviceId, environmentId);
+        if (validated == null) {
+            return null;
+        }
+
+        String channelName = "service:" + validated.serviceName() + ":" + validated.envCode();
+        SecretKey hmacKey = Keys.hmacShaKeyFor(jwtSigningKey.getBytes());
+        var now = new Date();
+        String subjectName = instanceName == null ? UUID.randomUUID().toString() : instanceName;
+
+        return Jwts.builder()
+                .subject(validated.serviceName() + ":" + validated.envCode() + ":" + subjectName)
                 .claim("channel", channelName)
                 .issuedAt(now)
                 .expiration(new Date(now.getTime() + JWT_EXPIRATION_MILLISECONDS))
                 .signWith(hmacKey)
                 .compact();
     }
+
+    /** Internal record for validated API key data */
+    private record ValidatedApiKey(String serviceName, String envCode) {}
 
     public String getApiKey(UUID serviceId, short environmentId) {
         var apiKeyId = new ApiKeyId(serviceId, environmentId);

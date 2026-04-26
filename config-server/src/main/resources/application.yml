@@ -26,4 +26,4 @@ config_platform:
   jwt:
     signingKey: ${JWT_SECRET:1234567890abcdefghijklmopqrstuxyz}
   apiKey:
-    encryptionKey: ${API_KEY_ENCRYPTION_KEY:nPuhXc07leQ4VeC6TS9wPE/q5+tH/oiKWeQM+dp3eb0=}
+    encryptionKey: ${API_KEY_ENCRYPTION_KEY:1234567890123456}
