@@ -27,3 +27,9 @@ config_platform:
     signingKey: ${JWT_SECRET:1234567890abcdefghijklmopqrstuxyz}
   apiKey:
     encryptionKey: ${API_KEY_ENCRYPTION_KEY:1234567890123456}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html

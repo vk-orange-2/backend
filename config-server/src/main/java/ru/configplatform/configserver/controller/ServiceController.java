@@ -1,5 +1,7 @@
 package ru.configplatform.configserver.controller;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -18,21 +20,18 @@ import java.util.List;
 @RestController
 @RequestMapping("/v1/services")
 @RequiredArgsConstructor
+@Tag(name = "Services", description = "Service registry")
 public class ServiceController {
 
     private final ConfigService configService;
 
-    /**
-     * GET /v1/services — список всех сервисов
-     */
+    @Operation(summary = "List all services")
     @GetMapping
     public ResponseEntity<List<ServiceResponse>> getServices() {
         return ResponseEntity.ok(configService.getServices());
     }
 
-    /**
-     * POST /v1/services — создать новый сервис
-     */
+    @Operation(summary = "Create a new service")
     @PostMapping
     public ResponseEntity<ServiceResponse> createService(
             @Valid @RequestBody CreateServiceRequest request

@@ -7,19 +7,16 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.*;
-import ru.configplatform.configserver.exception.ConfigNotFoundException;
-import ru.configplatform.configserver.exception.VersionConflictException;
-import ru.configplatform.configserver.exception.VersionNotFoundException;
-import ru.configplatform.configserver.exception.ServiceAlreadyExistsException;
+import ru.configplatform.configserver.exception.*;
 import ru.configplatform.configserver.model.CentrifugoOutboxEntity;
 import ru.configplatform.configserver.model.ConfigEntity;
 import ru.configplatform.configserver.model.ConfigVersionEntity;
 import ru.configplatform.configserver.model.EnvironmentEntity;
 import ru.configplatform.configserver.model.ServiceEntity;
-import ru.configplatform.configserver.repository.CentrifugoOutboxRepository;
 import ru.configplatform.configserver.repository.ConfigRepository;
 import ru.configplatform.configserver.repository.ConfigVersionRepository;
 import ru.configplatform.configserver.repository.EnvironmentRepository;
+import ru.configplatform.configserver.repository.RolloutRepository;
 import ru.configplatform.configserver.repository.ServiceRepository;
 import ru.configplatform.configserver.validation.PayloadValidator;
 
@@ -36,7 +33,7 @@ public class ConfigService {
     private final EnvironmentRepository environmentRepository;
     private final ConfigRepository configRepository;
     private final ConfigVersionRepository configVersionRepository;
-    private final CentrifugoOutboxRepository centrifugoOutboxRepository;
+    private final RolloutRepository rolloutRepository;
     private final PayloadValidator payloadValidator;
     private final DiffService diffService;
     private final AuditService auditService;
@@ -52,6 +49,10 @@ public class ConfigService {
      * 4. Инкрементирует версию
      * 5. Создает запись в config_versions (иммутабельная история)
      * 6. Пишет в centrifugo_outbox → триггер делает pg_notify → Centrifugo пушит клиентам
+     *
+     * ВАЖНО: Публикация в Centrifugo НЕ происходит здесь.
+     * Доставка клиентам выполняется через Rollout API.
+     * Это позволяет разделить "сохранение новой версии" и "доставку клиентам".
      */
     @Transactional
     public ConfigResponse createOrUpdate(CreateConfigRequest request, RequestContext ctx) {
@@ -86,6 +87,11 @@ public class ConfigService {
             throw new VersionConflictException(0L, config.getCurrentVersion());
         }
 
+        // Блокировка при активном rollout
+        if (config.getId() != null) {
+            checkNoActiveRollout(config.getId());
+        }
+
         if (!config.isActive()) {
             config.setStatus("active");
             config.setDeletedAt(null);
@@ -112,18 +118,9 @@ public class ConfigService {
                 config,
                 isCreate ? "CREATE" : "UPDATE",
                 isCreate ? null : previousVersion,
-                newVersion, 
-                diffJson, 
+                newVersion,
+                diffJson,
                 ctx
-        );
-
-        publishToCentrifugoOutbox(
-                config, 
-                service.getName(), 
-                environment.getCode(), 
-                request.getKey(), 
-                newVersion, 
-                request.getValue()
         );
 
         return toResponse(config, request.getValue());
@@ -172,6 +169,9 @@ public class ConfigService {
 
     /**
      * Обновить конфиг по его идентификатору.
+     *
+     * ВАЖНО: Публикация в Centrifugo НЕ происходит здесь.
+     * Доставка клиентам выполняется через Rollout API.
      */
     @Transactional
     public ConfigResponse updateById(UUID id, UpdateConfigRequest request, RequestContext ctx) {
@@ -179,6 +179,9 @@ public class ConfigService {
                 .orElseThrow(() -> new ConfigNotFoundException(id));
 
         checkVersion(request.getExpectedVersion(), config.getCurrentVersion());
+
+        // Блокировка при активном rollout
+        checkNoActiveRollout(config.getId());
 
         payloadValidator.validate(request.getValue(), "json");
 
@@ -198,20 +201,14 @@ public class ConfigService {
 
         auditService.log(config, "UPDATE", previousVersion, newVersion, diffJson, ctx);
 
-        publishToCentrifugoOutbox(
-                config,
-                config.getService().getName(),
-                config.getEnvironment().getCode(),
-                config.getConfigKey(),
-                newVersion,
-                request.getValue()
-        );
-
         return toResponse(config, request.getValue());
     }
 
     /**
      * Удалить конфиг по его идентификатору.
+     *
+     * Удаление — особый случай. Оно НЕ требует rollout, т.к. это административная операция.
+     * Удалённый конфиг больше не существует.
      */
     @Transactional
     public void deleteById(UUID id, Long expectedVersion, RequestContext ctx) {
@@ -231,26 +228,10 @@ public class ConfigService {
         createVersionRecord(config, newVersion, serializePayload(null), "delete", ctx.getActor(), null);
 
         auditService.log(config, "DELETE", previousVersion, newVersion, null, ctx);
-
-        Map<String, Object> deleteData = Map.of(
-                "key", config.getConfigKey(),
-                "version", newVersion,
-                "deleted", true,
-                "timestamp", Instant.now().toString()
-        );
-
-        publishRawToCentrifugo(
-                config.getId(), 
-                config.getService().getName(), 
-                config.getEnvironment().getCode(), 
-                newVersion, 
-                deleteData
-        );
     }
 
     /**
      * Возвращает полную историю версий конфигурации.
-     * Отсортирована по убыванию номера версии.
      */
     @Transactional(readOnly = true)
     public VersionHistoryResponse getVersionHistory(UUID configId) {
@@ -298,7 +279,8 @@ public class ConfigService {
     /**
      * Откатывает конфигурацию к указанной версии.
      *
-     * Rollback создаёт НОВУЮ версию с payload из targetVersion. Старые версии не модифицируются.
+     * Это "ручной" rollback конфига (не через rollout). Создаёт новую версию,
+     * но НЕ публикует в Centrifugo. Для доставки нужен rollout.
      */
     @Transactional
     public ConfigResponse rollback(UUID configId, RollbackRequest request, RequestContext ctx) {
@@ -333,14 +315,6 @@ public class ConfigService {
         auditService.log(config, "ROLLBACK", previousVersion, newVersion, diffJson, ctx);
 
         Object payloadObj = deserializePayload(targetPayload);
-        publishToCentrifugoOutbox(
-                config,
-                config.getService().getName(),
-                config.getEnvironment().getCode(),
-                config.getConfigKey(), 
-                newVersion, 
-                payloadObj
-        );
 
         return toResponse(config, payloadObj);
     }
@@ -391,6 +365,12 @@ public class ConfigService {
         }
     }
 
+    private void checkNoActiveRollout(UUID configId) {
+        rolloutRepository.findActiveByConfigId(configId).ifPresent(rollout -> {
+            throw new ActiveRolloutExistsException(configId, rollout.getId());
+        });
+    }
+
     private EnvironmentEntity resolveEnvironment(String envCode) {
         return environmentRepository.findByCode(envCode)
                 .orElseThrow(
@@ -426,49 +406,6 @@ public class ConfigService {
                 .findByConfigIdAndVersion(config.getId(), config.getCurrentVersion())
                 .map(v -> deserializePayload(v.getPayload()))
                 .orElse(null);
-    }
-
-    private void publishToCentrifugoOutbox(
-            ConfigEntity config, String serviceName,
-            String envCode, String key,
-            long version, Object payload
-    ) {
-        Map<String, Object> data = Map.of(
-                "configId", config.getId().toString(),
-                "key", key,
-                "version", version,
-                "payload", payload,
-                "timestamp", Instant.now().toString()
-        );
-        publishRawToCentrifugo(config.getId(), serviceName, envCode, version, data);
-    }
-
-    private void publishRawToCentrifugo(
-            UUID configId, String serviceName,
-            String envCode, long version,
-            Map<String, Object> data
-    ) {
-        String channel = "service:" + serviceName + ":" + envCode;
-        String idempotencyKey = configId + ":v" + version;
-
-        Map<String, Object> centrifugoPayload = Map.of(
-                "channel", channel,
-                "data", data
-        );
-
-        CentrifugoOutboxEntity outbox = CentrifugoOutboxEntity.builder()
-                .method("publish")
-                .payload(serializePayload(centrifugoPayload))
-                .partition(0)
-                .idempotencyKey(idempotencyKey)
-                .build();
-
-        try {
-            centrifugoOutboxRepository.save(outbox);
-        } catch (DataIntegrityViolationException e) {
-            // Идемпотентность: запись с таким ключом уже существует
-            // Это нормальная ситуация при повторной обработке — просто игнорируем
-        }
     }
 
     private VersionResponse toVersionResponse(ConfigVersionEntity entity) {
