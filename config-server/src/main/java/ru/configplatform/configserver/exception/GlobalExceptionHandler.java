@@ -64,6 +64,16 @@ public class GlobalExceptionHandler {
         ));
     }
 
+    @ExceptionHandler(ServiceAlreadyExistsException.class)
+    public ResponseEntity<Map<String, Object>> handleServiceAlreadyExists(ServiceAlreadyExistsException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "error", Map.of(
+                        "code", "SERVICE_ALREADY_EXISTS",
+                        "message", ex.getMessage()
+                )
+        ));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(

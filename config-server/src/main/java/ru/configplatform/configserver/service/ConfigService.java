@@ -6,19 +6,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import ru.configplatform.configserver.dto.ConfigListResponse;
-import ru.configplatform.configserver.dto.ConfigResponse;
-import ru.configplatform.configserver.dto.CreateConfigRequest;
-import ru.configplatform.configserver.dto.DiffResponse;
-import ru.configplatform.configserver.dto.RequestContext;
-import ru.configplatform.configserver.dto.RollbackRequest;
-import ru.configplatform.configserver.dto.ServiceResponse;
-import ru.configplatform.configserver.dto.UpdateConfigRequest;
-import ru.configplatform.configserver.dto.VersionHistoryResponse;
-import ru.configplatform.configserver.dto.VersionResponse;
+import ru.configplatform.configserver.dto.*;
 import ru.configplatform.configserver.exception.ConfigNotFoundException;
 import ru.configplatform.configserver.exception.VersionConflictException;
 import ru.configplatform.configserver.exception.VersionNotFoundException;
+import ru.configplatform.configserver.exception.ServiceAlreadyExistsException;
 import ru.configplatform.configserver.model.CentrifugoOutboxEntity;
 import ru.configplatform.configserver.model.ConfigEntity;
 import ru.configplatform.configserver.model.ConfigVersionEntity;
@@ -366,6 +358,31 @@ public class ConfigService {
                         .createdAt(s.getCreatedAt())
                         .build())
                 .toList();
+    }
+
+    /**
+     * Создать новый сервис явно.
+     * Если сервис с таким именем уже существует — возвращает 409 CONFLICT.
+     */
+    @Transactional
+    public ServiceResponse createService(CreateServiceRequest request) {
+        serviceRepository.findByName(request.getName()).ifPresent(existing -> {
+            throw new ServiceAlreadyExistsException(request.getName());
+        });
+
+        ServiceEntity service = serviceRepository.save(
+                ServiceEntity.builder()
+                        .name(request.getName())
+                        .description(request.getDescription())
+                        .build()
+        );
+
+        return ServiceResponse.builder()
+                .id(service.getId())
+                .name(service.getName())
+                .description(service.getDescription())
+                .createdAt(service.getCreatedAt())
+                .build();
     }
 
     private void checkVersion(long expectedVersion, long actualVersion) {
