@@ -40,4 +40,19 @@ public interface RolloutRepository extends JpaRepository<RolloutEntity, UUID> {
     }
 
     List<RolloutEntity> findByStatusOrderByCreatedAtDesc(RolloutStatus status);
+
+    @Query("SELECT r FROM RolloutEntity r " +
+            "WHERE r.config.service.name = :serviceName " +
+            "AND r.config.environment.code = :envCode " +
+            "AND r.status IN (:statuses)")
+    List<RolloutEntity> findActiveByServiceAndEnvironment(
+            @Param("serviceName") String serviceName,
+            @Param("envCode") String envCode,
+            @Param("statuses") List<RolloutStatus> statuses
+    );
+
+    default List<RolloutEntity> findActiveByServiceAndEnvironment(String serviceName, String envCode) {
+        return findActiveByServiceAndEnvironment(serviceName, envCode,
+                List.of(RolloutStatus.PENDING, RolloutStatus.IN_PROGRESS));
+    }
 }

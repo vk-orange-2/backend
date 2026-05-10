@@ -5,6 +5,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -107,6 +108,23 @@ public class RolloutController {
     ) {
         RequestContext ctx = extractContext(httpRequest);
         return ResponseEntity.ok(rolloutService.deployNext(id, ctx));
+    }
+
+    @Operation(
+            summary = "Get active rollouts for service and environment",
+            description = "Returns ALL currently active rollouts (pending or in_progress) "
+                    + "for the given service and environment. "
+                    + "Used by SDK on connect/reconnect to restore delivery state in a single request."
+    )
+    @ApiResponse(responseCode = "200", description = "List of active rollouts (may be empty)")
+    @GetMapping("/active")
+    public ResponseEntity<List<RolloutResponse>> getActiveRollouts(
+            @RequestParam @NotBlank String serviceName,
+            @RequestParam @NotBlank String environment
+    ) {
+        return ResponseEntity.ok(
+                rolloutService.getActiveByServiceAndEnvironment(serviceName, environment)
+        );
     }
 
     private RequestContext extractContext(HttpServletRequest request) {

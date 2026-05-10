@@ -14,6 +14,7 @@ import ru.configplatform.configserver.dto.CreateConfigRequest;
 import ru.configplatform.configserver.dto.CreateRolloutRequest;
 import ru.configplatform.configserver.dto.UpdateConfigRequest;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -542,6 +543,129 @@ class RolloutControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldGetActiveRolloutsForServiceAndEnvironment() throws Exception {
+        String configId = createConfigAndReturnId("rollout-active-svc", "dev", "active-key",
+                Map.of("v", 1));
+        UpdateConfigRequest update = UpdateConfigRequest.builder()
+                .value(Map.of("v", 2))
+                .expectedVersion(1L)
+                .build();
+        mockMvc.perform(put("/v1/configs/" + configId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)));
+
+        CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("gradual")
+                .totalDeployments(5)
+                .deploymentIntervalSeconds(60)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rolloutReq)))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/v1/rollouts/active")
+                        .param("serviceName", "rollout-active-svc")
+                        .param("environment", "dev"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].status", is("in_progress")))
+                .andExpect(jsonPath("$[0].totalDeployments", is(5)))
+                .andExpect(jsonPath("$[0].currentDeployment", is(1)))
+                .andExpect(jsonPath("$[0].configId", is(configId)));
+    }
+
+    @Test
+    void shouldReturnEmptyListWhenNoActiveRollouts() throws Exception {
+        createConfigAndReturnId("rollout-noactive-svc", "dev", "noactive-key",
+                Map.of("v", 1));
+
+        mockMvc.perform(get("/v1/rollouts/active")
+                        .param("serviceName", "rollout-noactive-svc")
+                        .param("environment", "dev"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
+    }
+
+    @Test
+    void shouldReturnMultipleActiveRolloutsForServiceEnv() throws Exception {
+        // Два разных конфига в одном service+env — оба с активными роллаутами
+        String configId1 = createConfigAndReturnId("rollout-multi-svc", "dev", "key-1", Map.of("v", 1));
+        String configId2 = createConfigAndReturnId("rollout-multi-svc", "dev", "key-2", Map.of("v", 1));
+
+        // Делаем gradual (он остаётся in_progress)
+        mockMvc.perform(put("/v1/configs/" + configId1)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(
+                        UpdateConfigRequest.builder().value(Map.of("v", 2)).expectedVersion(1L).build()
+                )));
+        mockMvc.perform(put("/v1/configs/" + configId2)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(
+                        UpdateConfigRequest.builder().value(Map.of("v", 2)).expectedVersion(1L).build()
+                )));
+
+        for (String cid : List.of(configId1, configId2)) {
+            CreateRolloutRequest req = CreateRolloutRequest.builder()
+                    .configId(UUID.fromString(cid))
+                    .type("gradual")
+                    .totalDeployments(5)
+                    .deploymentIntervalSeconds(60)
+                    .build();
+            mockMvc.perform(post("/v1/rollouts")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isCreated());
+        }
+
+        // И ещё один rollout в ДРУГОМ окружении того же сервиса — он не должен попасть в выдачу
+        String configIdProd = createConfigAndReturnId("rollout-multi-svc", "prod", "key-1", Map.of("v", 1));
+        mockMvc.perform(put("/v1/configs/" + configIdProd)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(
+                        UpdateConfigRequest.builder().value(Map.of("v", 2)).expectedVersion(1L).build()
+                )));
+        mockMvc.perform(post("/v1/rollouts")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(
+                        CreateRolloutRequest.builder()
+                                .configId(UUID.fromString(configIdProd))
+                                .type("gradual")
+                                .totalDeployments(3)
+                                .deploymentIntervalSeconds(60)
+                                .build()
+                )));
+
+        mockMvc.perform(get("/v1/rollouts/active")
+                        .param("serviceName", "rollout-multi-svc")
+                        .param("environment", "dev"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)));
+    }
+
+    @Test
+    void shouldNotReturnCompletedRolloutsInActiveList() throws Exception {
+        String configId = createConfigAndReturnId("rollout-completed-svc", "dev", "k", Map.of("v", 1));
+        // instant сразу completed
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                CreateRolloutRequest.builder()
+                                        .configId(UUID.fromString(configId))
+                                        .type("instant")
+                                        .build()
+                        )))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/v1/rollouts/active")
+                        .param("serviceName", "rollout-completed-svc")
+                        .param("environment", "dev"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
     }
 
     private String createConfigAndReturnId(String service, String env, String key, Object value) throws Exception {

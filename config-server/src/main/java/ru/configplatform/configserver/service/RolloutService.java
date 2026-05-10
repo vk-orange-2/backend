@@ -173,6 +173,18 @@ public class RolloutService {
     }
 
     /**
+     * Получить все активные rollout-ы для service+environment.
+     * Используется SDK при реконнекте/старте — один запрос вместо N.
+     */
+    @Transactional(readOnly = true)
+    public List<RolloutResponse> getActiveByServiceAndEnvironment(String serviceName, String envCode) {
+        return rolloutRepository.findActiveByServiceAndEnvironment(serviceName, envCode)
+                .stream()
+                .map(this::toResponse)
+                .toList();
+    }
+
+    /**
      * Остановить rollout
      * Останавливает дальнейшее распространение без изменения глобальной версии
      */
