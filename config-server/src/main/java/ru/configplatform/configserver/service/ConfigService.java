@@ -3,15 +3,14 @@ package ru.configplatform.configserver.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import ru.configplatform.configserver.dto.ConfigListResponse;
-import ru.configplatform.configserver.dto.ConfigResponse;
-import ru.configplatform.configserver.dto.CreateConfigRequest;
-import ru.configplatform.configserver.dto.ServiceResponse;
-import ru.configplatform.configserver.dto.UpdateConfigRequest;
+import ru.configplatform.configserver.dto.*;
 import ru.configplatform.configserver.exception.ConfigNotFoundException;
 import ru.configplatform.configserver.exception.VersionConflictException;
+import ru.configplatform.configserver.exception.VersionNotFoundException;
+import ru.configplatform.configserver.exception.ServiceAlreadyExistsException;
 import ru.configplatform.configserver.model.CentrifugoOutboxEntity;
 import ru.configplatform.configserver.model.ConfigEntity;
 import ru.configplatform.configserver.model.ConfigVersionEntity;
@@ -24,6 +23,7 @@ import ru.configplatform.configserver.repository.EnvironmentRepository;
 import ru.configplatform.configserver.repository.ServiceRepository;
 import ru.configplatform.configserver.validation.PayloadValidator;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -38,10 +38,12 @@ public class ConfigService {
     private final ConfigVersionRepository configVersionRepository;
     private final CentrifugoOutboxRepository centrifugoOutboxRepository;
     private final PayloadValidator payloadValidator;
+    private final DiffService diffService;
+    private final AuditService auditService;
     private final ObjectMapper objectMapper;
 
     /**
-     * Создает или обновляет конфиг.
+     * Создает новый конфиг или обновляет существующий (upsert по service+env+key)
      *
      * В одной транзакции:
      * 1. Находит или создает сервис по имени
@@ -52,7 +54,7 @@ public class ConfigService {
      * 6. Пишет в centrifugo_outbox → триггер делает pg_notify → Centrifugo пушит клиентам
      */
     @Transactional
-    public ConfigResponse createOrUpdate(CreateConfigRequest request) {
+    public ConfigResponse createOrUpdate(CreateConfigRequest request, RequestContext ctx) {
         payloadValidator.validate(request.getValue(), "json");
 
         ServiceEntity service = serviceRepository
@@ -89,18 +91,38 @@ public class ConfigService {
             config.setDeletedAt(null);
         }
 
-        long newVersion = config.getCurrentVersion() + 1;
+        long previousVersion = config.getCurrentVersion();
+        long newVersion = previousVersion + 1;
+        boolean isCreate = previousVersion == 0;
+        String changeType = isCreate ? "create" : "update";
+
         config.setCurrentVersion(newVersion);
         config = configRepository.save(config);
 
-        String changeType = newVersion == 1 ? "create" : "update";
-        createVersionRecord(config, newVersion, payloadJson, changeType);
+        createVersionRecord(config, newVersion, payloadJson, changeType, ctx.getActor(), null);
+
+        String diffJson = null;
+        if (!isCreate) {
+            String oldPayload = getPayloadForVersion(config.getId(), previousVersion);
+            DiffResponse diff = diffService.computeDiff(oldPayload, payloadJson, previousVersion, newVersion);
+            diffJson = diffService.serializeDiff(diff);
+        }
+
+        auditService.log(
+                config,
+                isCreate ? "CREATE" : "UPDATE",
+                isCreate ? null : previousVersion,
+                newVersion, 
+                diffJson, 
+                ctx
+        );
 
         publishToCentrifugoOutbox(
-                service.getName(),
-                environment.getCode(),
-                request.getKey(),
-                newVersion,
+                config, 
+                service.getName(), 
+                environment.getCode(), 
+                request.getKey(), 
+                newVersion, 
                 request.getValue()
         );
 
@@ -152,22 +174,32 @@ public class ConfigService {
      * Обновить конфиг по его идентификатору.
      */
     @Transactional
-    public ConfigResponse updateById(UUID id, UpdateConfigRequest request) {
+    public ConfigResponse updateById(UUID id, UpdateConfigRequest request, RequestContext ctx) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
                 .orElseThrow(() -> new ConfigNotFoundException(id));
 
         checkVersion(request.getExpectedVersion(), config.getCurrentVersion());
 
         payloadValidator.validate(request.getValue(), "json");
+
         String payloadJson = serializePayload(request.getValue());
 
-        long newVersion = config.getCurrentVersion() + 1;
+        long previousVersion = config.getCurrentVersion();
+        long newVersion = previousVersion + 1;
+
         config.setCurrentVersion(newVersion);
         config = configRepository.save(config);
 
-        createVersionRecord(config, newVersion, payloadJson, "update");
+        createVersionRecord(config, newVersion, payloadJson, "update", ctx.getActor(), null);
+
+        String oldPayload = getPayloadForVersion(config.getId(), previousVersion);
+        DiffResponse diff = diffService.computeDiff(oldPayload, payloadJson, previousVersion, newVersion);
+        String diffJson = diffService.serializeDiff(diff);
+
+        auditService.log(config, "UPDATE", previousVersion, newVersion, diffJson, ctx);
 
         publishToCentrifugoOutbox(
+                config,
                 config.getService().getName(),
                 config.getEnvironment().getCode(),
                 config.getConfigKey(),
@@ -182,7 +214,7 @@ public class ConfigService {
      * Удалить конфиг по его идентификатору.
      */
     @Transactional
-    public void deleteById(UUID id, Long expectedVersion) {
+    public void deleteById(UUID id, Long expectedVersion, RequestContext ctx) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
                 .orElseThrow(() -> new ConfigNotFoundException(id));
 
@@ -190,19 +222,127 @@ public class ConfigService {
 
         config.markDeleted();
 
-        long newVersion = config.getCurrentVersion() + 1;
+        long previousVersion = config.getCurrentVersion();
+        long newVersion = previousVersion + 1;
+
         config.setCurrentVersion(newVersion);
         configRepository.save(config);
 
-        createVersionRecord(config, newVersion, serializePayload(null), "delete");
+        createVersionRecord(config, newVersion, serializePayload(null), "delete", ctx.getActor(), null);
+
+        auditService.log(config, "DELETE", previousVersion, newVersion, null, ctx);
 
         Map<String, Object> deleteData = Map.of(
                 "key", config.getConfigKey(),
                 "version", newVersion,
-                "deleted", true
+                "deleted", true,
+                "timestamp", Instant.now().toString()
         );
 
-        publishRawToCentrifugo(config.getService().getName(), config.getEnvironment().getCode(), deleteData);
+        publishRawToCentrifugo(
+                config.getId(), 
+                config.getService().getName(), 
+                config.getEnvironment().getCode(), 
+                newVersion, 
+                deleteData
+        );
+    }
+
+    /**
+     * Возвращает полную историю версий конфигурации.
+     * Отсортирована по убыванию номера версии.
+     */
+    @Transactional(readOnly = true)
+    public VersionHistoryResponse getVersionHistory(UUID configId) {
+        ConfigEntity config = configRepository.findById(configId)
+                .orElseThrow(() -> new ConfigNotFoundException(configId));
+
+        List<VersionResponse> versions = configVersionRepository
+                .findByConfigIdOrderByVersionDesc(configId)
+                .stream()
+                .map(this::toVersionResponse)
+                .toList();
+
+        return VersionHistoryResponse.builder().versions(versions).build();
+    }
+
+    /**
+     * Возвращает конкретную версию конфигурации.
+     */
+    @Transactional(readOnly = true)
+    public VersionResponse getVersion(UUID configId, long version) {
+        configRepository.findById(configId)
+                .orElseThrow(() -> new ConfigNotFoundException(configId));
+
+        ConfigVersionEntity versionEntity = configVersionRepository
+                .findByConfigIdAndVersion(configId, version)
+                .orElseThrow(() -> new VersionNotFoundException(configId, version));
+
+        return toVersionResponse(versionEntity);
+    }
+
+    /**
+     * Вычисляет diff между двумя версиями конфигурации.
+     */
+    @Transactional(readOnly = true)
+    public DiffResponse getDiff(UUID configId, long versionFrom, long versionTo) {
+        configRepository.findById(configId)
+                .orElseThrow(() -> new ConfigNotFoundException(configId));
+
+        String payloadFrom = getPayloadForVersion(configId, versionFrom);
+        String payloadTo = getPayloadForVersion(configId, versionTo);
+
+        return diffService.computeDiff(payloadFrom, payloadTo, versionFrom, versionTo);
+    }
+
+    /**
+     * Откатывает конфигурацию к указанной версии.
+     *
+     * Rollback создаёт НОВУЮ версию с payload из targetVersion. Старые версии не модифицируются.
+     */
+    @Transactional
+    public ConfigResponse rollback(UUID configId, RollbackRequest request, RequestContext ctx) {
+        ConfigEntity config = configRepository.findByIdAndStatus(configId, "active")
+                .orElseThrow(() -> new ConfigNotFoundException(configId));
+
+        checkVersion(request.getExpectedVersion(), config.getCurrentVersion());
+
+        ConfigVersionEntity targetVersion = configVersionRepository
+                .findByConfigIdAndVersion(configId, request.getTargetVersion())
+                .orElseThrow(() -> new VersionNotFoundException(configId,
+                        request.getTargetVersion()));
+
+        String targetPayload = targetVersion.getPayload();
+
+        long previousVersion = config.getCurrentVersion();
+        long newVersion = previousVersion + 1;
+
+        config.setCurrentVersion(newVersion);
+        config = configRepository.save(config);
+
+        String comment = request.getComment() != null
+                ? request.getComment()
+                : "Rollback to version " + request.getTargetVersion();
+
+        createVersionRecord(config, newVersion, targetPayload, "rollback", ctx.getActor(), comment);
+
+        String currentPayload = getPayloadForVersion(configId, previousVersion);
+        DiffResponse diff = diffService.computeDiff(currentPayload, targetPayload, previousVersion, newVersion);
+        String diffJson = diffService.serializeDiff(diff);
+
+        auditService.log(config, "ROLLBACK", previousVersion, newVersion, diffJson, ctx);
+
+        Object payloadObj = deserializePayload(targetPayload);
+        publishToCentrifugoOutbox(
+                config,
+                config.getService().getName(),
+                config.getEnvironment().getCode(),
+                config.getConfigKey(), 
+                newVersion, 
+                payloadObj
+        );
+
+        return toResponse(config, payloadObj);
     }
 
     /**
@@ -218,6 +358,31 @@ public class ConfigService {
                         .createdAt(s.getCreatedAt())
                         .build())
                 .toList();
+    }
+
+    /**
+     * Создать новый сервис явно.
+     * Если сервис с таким именем уже существует — возвращает 409 CONFLICT.
+     */
+    @Transactional
+    public ServiceResponse createService(CreateServiceRequest request) {
+        serviceRepository.findByName(request.getName()).ifPresent(existing -> {
+            throw new ServiceAlreadyExistsException(request.getName());
+        });
+
+        ServiceEntity service = serviceRepository.save(
+                ServiceEntity.builder()
+                        .name(request.getName())
+                        .description(request.getDescription())
+                        .build()
+        );
+
+        return ServiceResponse.builder()
+                .id(service.getId())
+                .name(service.getName())
+                .description(service.getDescription())
+                .createdAt(service.getCreatedAt())
+                .build();
     }
 
     private void checkVersion(long expectedVersion, long actualVersion) {
@@ -236,14 +401,24 @@ public class ConfigService {
     }
 
     private void createVersionRecord(ConfigEntity config, long version,
-                                     String payloadJson, String changeType) {
+                                     String payloadJson, String changeType,
+                                     String author, String comment) {
         ConfigVersionEntity versionEntity = ConfigVersionEntity.builder()
                 .config(config)
                 .version(version)
                 .payload(payloadJson)
                 .changeType(changeType)
+                .author(author)
+                .comment(comment)
                 .build();
         configVersionRepository.save(versionEntity);
+    }
+
+    private String getPayloadForVersion(UUID configId, long version) {
+        return configVersionRepository
+                .findByConfigIdAndVersion(configId, version)
+                .map(ConfigVersionEntity::getPayload)
+                .orElse(null);
     }
 
     private Object loadLatestPayload(ConfigEntity config) {
@@ -253,19 +428,28 @@ public class ConfigService {
                 .orElse(null);
     }
 
-    private void publishToCentrifugoOutbox(String serviceName, String envCode,
-                                     String key, long version, Object payload) {
+    private void publishToCentrifugoOutbox(
+            ConfigEntity config, String serviceName,
+            String envCode, String key,
+            long version, Object payload
+    ) {
         Map<String, Object> data = Map.of(
+                "configId", config.getId().toString(),
                 "key", key,
                 "version", version,
-                "payload", payload
+                "payload", payload,
+                "timestamp", Instant.now().toString()
         );
-        publishRawToCentrifugo(serviceName, envCode, data);
+        publishRawToCentrifugo(config.getId(), serviceName, envCode, version, data);
     }
 
-    private void publishRawToCentrifugo(String serviceName, String envCode,
-                                        Map<String, Object> data) {
+    private void publishRawToCentrifugo(
+            UUID configId, String serviceName,
+            String envCode, long version,
+            Map<String, Object> data
+    ) {
         String channel = "service:" + serviceName + ":" + envCode;
+        String idempotencyKey = configId + ":v" + version;
 
         Map<String, Object> centrifugoPayload = Map.of(
                 "channel", channel,
@@ -276,9 +460,28 @@ public class ConfigService {
                 .method("publish")
                 .payload(serializePayload(centrifugoPayload))
                 .partition(0)
+                .idempotencyKey(idempotencyKey)
                 .build();
 
-        centrifugoOutboxRepository.save(outbox);
+        try {
+            centrifugoOutboxRepository.save(outbox);
+        } catch (DataIntegrityViolationException e) {
+            // Идемпотентность: запись с таким ключом уже существует
+            // Это нормальная ситуация при повторной обработке — просто игнорируем
+        }
+    }
+
+    private VersionResponse toVersionResponse(ConfigVersionEntity entity) {
+        return VersionResponse.builder()
+                .id(entity.getId())
+                .configId(entity.getConfig().getId())
+                .version(entity.getVersion())
+                .payload(deserializePayload(entity.getPayload()))
+                .changeType(entity.getChangeType())
+                .author(entity.getAuthor())
+                .comment(entity.getComment())
+                .createdAt(entity.getCreatedAt())
+                .build();
     }
 
     private ConfigResponse toResponse(ConfigEntity config, Object payload) {
@@ -310,6 +513,9 @@ public class ConfigService {
     }
 
     private Object deserializePayload(String json) {
+        if (json == null || "null".equals(json)) {
+            return null;
+        }
         try {
             return objectMapper.readValue(json, Object.class);
         } catch (JsonProcessingException e) {

@@ -10,9 +10,11 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.CreateConfigRequest;
+import ru.configplatform.configserver.dto.CreateServiceRequest;
 
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.is;
+import java.util.UUID;
+
+import static org.hamcrest.Matchers.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -55,6 +57,53 @@ class ServiceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(1)))
                 .andExpect(jsonPath("$[0].name", is("dedup-service")));
+    }
+
+    @Test
+    void shouldCreateService() throws Exception {
+        CreateServiceRequest request = CreateServiceRequest.builder()
+                .name("new-service-" + UUID.randomUUID())
+                .description("Test service")
+                .build();
+
+        mockMvc.perform(post("/v1/services")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.name", is(request.getName())))
+                .andExpect(jsonPath("$.description", is("Test service")))
+                .andExpect(jsonPath("$.id", notNullValue()));
+    }
+
+    @Test
+    void shouldReturn409WhenServiceAlreadyExists() throws Exception {
+        String name = "duplicate-svc-" + UUID.randomUUID();
+        CreateServiceRequest request = CreateServiceRequest.builder()
+                .name(name)
+                .build();
+
+        mockMvc.perform(post("/v1/services")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/v1/services")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code", is("SERVICE_ALREADY_EXISTS")));
+    }
+
+    @Test
+    void shouldReturn400WhenServiceNameBlank() throws Exception {
+        CreateServiceRequest request = CreateServiceRequest.builder()
+                .name("")
+                .build();
+
+        mockMvc.perform(post("/v1/services")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest());
     }
 
     private void createConfig(String service, String env, String key, Object value)

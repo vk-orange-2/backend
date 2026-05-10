@@ -41,6 +41,9 @@ public class CentrifugoOutboxEntity {
     @Builder.Default
     private Integer partition = 0;
 
+    @Column(name = "idempotency_key")
+    private String idempotencyKey;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
