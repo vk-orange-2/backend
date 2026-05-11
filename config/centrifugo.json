@@ -1,6 +1,5 @@
 {
     "client": {
-        "allow_anonymous_connect_without_token": true,
         "allowed_origins": ["*"]
     },
     "engine": {
@@ -10,8 +9,6 @@
         "namespaces": [
             {
                 "name": "service",
-                "allow_subscribe_for_client": true,
-                "allow_subscribe_for_anonymous": true,
                 "presence": true,
                 "force_recovery": true,
                 "history_size": 10,

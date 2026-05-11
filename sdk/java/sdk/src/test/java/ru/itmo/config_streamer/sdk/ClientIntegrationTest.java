@@ -19,29 +19,34 @@ import org.junit.jupiter.api.Test;
  * Requires a running server at localhost:8080 with /v1/configs endpoint and
  * Centrifugo.
  * 
+ * Set API_KEY environment variable to a valid API key in format:
+ * "serviceId:environmentId:keyValue"
  * 
  * Also set CENTRIFUGO_API_KEY environment variable for the publish test.
  */
 class ClientIntegrationTest {
 
     private static final String BASE_URL = "http://localhost:8080";
-    private static final String API_TOKEN = "test-token";
-    private static final String SERVICE = "test-service";
-    private static final String ENV = "dev";
+    private static String apiKey;
     private static String centrifugoApiKey;
 
     @BeforeAll
     static void setup() {
+        apiKey = System.getenv("SDK_TEST_API_KEY");
         centrifugoApiKey = System.getenv("CENTRIFUGO_API_KEY");
     }
 
     @Test
     void testFetchInitialConfigs() throws InterruptedException {
+        // Skip if no API key is set
+        assumeTrue(apiKey != null && !apiKey.isEmpty(),
+                "Skipping test: API_KEY not set");
+
         // Given: A client with a callback to capture config updates
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<Config> capturedConfig = new AtomicReference<>();
 
-        Client client = new Client(BASE_URL, API_TOKEN, SERVICE, ENV);
+        Client client = new Client(BASE_URL, apiKey);
         client.addCallback(config -> {
             capturedConfig.set(config);
             latch.countDown();
@@ -67,10 +72,14 @@ class ClientIntegrationTest {
 
     @Test
     void testGetConfigFromCache() throws InterruptedException {
+        // Skip if no API key is set
+        assumeTrue(apiKey != null && !apiKey.isEmpty(),
+                "Skipping test: API_KEY not set");
+
         // Given: A client that fetches configs
         CountDownLatch latch = new CountDownLatch(1);
 
-        Client client = new Client(BASE_URL, API_TOKEN, SERVICE, ENV);
+        Client client = new Client(BASE_URL, apiKey);
         client.addCallback(config -> latch.countDown());
 
         // When: We run the client
@@ -84,7 +93,7 @@ class ClientIntegrationTest {
         assertTrue(received, "Should have received a config callback");
 
         // Note: get() returns null if key doesn't match - this is expected behavior
-        // The actual key depends on the stub response from nginx
+        // The actual key depends on the server response
         Config config = client.get("example-config");
         if (config != null) {
             assertEquals("example-config", config.key());
@@ -93,6 +102,9 @@ class ClientIntegrationTest {
 
     @Test
     void testSubscriptionReceivesPublishedConfig() throws Exception {
+        // Skip if no API key is set
+        assumeTrue(apiKey != null && !apiKey.isEmpty(),
+                "Skipping test: API_KEY not set");
         // Skip if no Centrifugo API key is set
         assumeTrue(centrifugoApiKey != null && !centrifugoApiKey.isEmpty(),
                 "Skipping test: CENTRIFUGO_API_KEY not set");
@@ -101,7 +113,7 @@ class ClientIntegrationTest {
         CountDownLatch latch = new CountDownLatch(2); // Expect initial config + published config
         AtomicReference<Config> publishedConfig = new AtomicReference<>();
 
-        Client client = new Client(BASE_URL, API_TOKEN, SERVICE, ENV);
+        Client client = new Client(BASE_URL, apiKey);
         client.addCallback(config -> {
             if ("published-config".equals(config.key())) {
                 publishedConfig.set(config);
@@ -112,11 +124,14 @@ class ClientIntegrationTest {
         // Start the client
         client.run();
 
-        // // Wait a bit for subscription to be ready
+        // Wait a bit for subscription to be ready
         Thread.sleep(1000);
 
+        // Channel format is "service:<service_name>:<env_code>"
+        // From V1_2__test_init_data.sql: service name = 'client-test-service', env = 'dev'
+        String channel = "service:client-test-service:dev";
+
         // When: We publish a config to Centrifugo
-        String channel = "service:" + SERVICE + ":" + ENV;
         String publishPayload = "{\"key\":\"published-config\",\"version\":42,\"payload\":{\"data\":\"test-value\"}}";
 
         HttpClient httpClient = HttpClient.newHttpClient();

@@ -1,17 +1,21 @@
 package ru.configplatform.configserver.exception;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.HashMap;
 import java.util.Map;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
     @ExceptionHandler(VersionConflictException.class)
     public ResponseEntity<Map<String, Object>> handleVersionConflict(
@@ -32,16 +36,16 @@ public class GlobalExceptionHandler {
             MethodArgumentNotValidException ex) {
 
         Map<String, String> fieldErrors = new HashMap<>();
-        ex.getBindingResult().getFieldErrors().forEach(error ->
-                fieldErrors.put(error.getField(), error.getDefaultMessage()));
+        ex.getBindingResult().getFieldErrors()
+                .forEach(error -> fieldErrors.put(error.getField(), error.getDefaultMessage()));
+
+        log.warn("Validation error: {}", fieldErrors);
 
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
                 "error", Map.of(
                         "code", "VALIDATION_ERROR",
                         "message", "Request payload is invalid",
-                        "details", fieldErrors
-                )
-        ));
+                        "details", fieldErrors)));
     }
 
     @ExceptionHandler(ConfigNotFoundException.class)
@@ -76,33 +80,43 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
+        log.warn("Illegal argument: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
                 "error", Map.of(
                         "code", "BAD_REQUEST",
-                        "message", ex.getMessage()
-                )
-        ));
+                        "message", ex.getMessage())));
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<Map<String, Object>> handleMissingParam(
             MissingServletRequestParameterException ex) {
 
+        log.warn("Missing request parameter: {}", ex.getMessage());
+
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
                 "error", Map.of(
                         "code", "MISSING_PARAMETER",
-                        "message", ex.getMessage()
-                )
-        ));
+                        "message", ex.getMessage())));
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Map<String, Object>> handleTypeMismatch(
+            MethodArgumentTypeMismatchException ex) {
+
+        log.warn("Type mismatch for parameter '{}': {}", ex.getName(), ex.getMessage());
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                "error", Map.of(
+                        "code", "INVALID_PARAMETER",
+                        "message", "Invalid parameter value: " + ex.getName())));
     }
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(Exception ex) {
+        log.error("Unhandled exception: {}", ex.getMessage(), ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
                 "error", Map.of(
                         "code", "INTERNAL_ERROR",
-                        "message", "An unexpected error occurred"
-                )
-        ));
+                        "message", "An unexpected error occurred")));
     }
 }
