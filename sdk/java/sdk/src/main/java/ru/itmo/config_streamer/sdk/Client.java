@@ -21,19 +21,12 @@ import java.util.logging.Logger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import io.github.centrifugal.centrifuge.ConnectedEvent;
-import io.github.centrifugal.centrifuge.ConnectionTokenEvent;
-import io.github.centrifugal.centrifuge.ConnectionTokenGetter;
-import io.github.centrifugal.centrifuge.EventListener;
-import io.github.centrifugal.centrifuge.Options;
 import io.github.centrifugal.centrifuge.PublicationEvent;
-import io.github.centrifugal.centrifuge.Subscription;
-import io.github.centrifugal.centrifuge.SubscriptionEventListener;
-import io.github.centrifugal.centrifuge.SubscriptionOptions;
-import io.github.centrifugal.centrifuge.SubscriptionTokenEvent;
-import io.github.centrifugal.centrifuge.SubscriptionTokenGetter;
-import io.github.centrifugal.centrifuge.TokenCallback;
 
+/**
+ * Main client for receiving configuration updates via Centrifugo WebSocket.
+ * Supports gradual rollout functionality for staged configuration deployments.
+ */
 public class Client {
     private static final Logger LOGGER = Logger.getLogger(Client.class.getName());
 
@@ -46,17 +39,18 @@ public class Client {
     // Extracted from JWT channel claim
     private String serviceName;
     private String envName;
-    private String channel;
+    private String baseChannel;
 
     private final Map<String, Config> configCache = new HashMap<>();
     private final ReadWriteLock cacheLock = new ReentrantReadWriteLock();
-
     private final List<Consumer<Config>> callbacks = new CopyOnWriteArrayList<>();
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
 
-    private io.github.centrifugal.centrifuge.Client centrifugoClient;
+    private final TokenFetcher tokenFetcher;
+    private final GradualRolloutManager gradualRolloutManager;
+    private final CentrifugoManager centrifugoManager;
 
     /**
      * Creates a new Client instance.
@@ -79,12 +73,25 @@ public class Client {
         this.serviceId = UUID.fromString(parts[0]);
         this.environmentId = Short.parseShort(parts[1]);
         this.apiKey = parts[2];
+
+        this.tokenFetcher = new TokenFetcher(baseUrl, serviceId, environmentId, apiKey, instanceName);
+
+        // Fetch subscription token to extract channel info and initialize managers
+        String subscriptionToken = fetchSubscriptionTokenSafely();
+        extractChannelFromJwt(subscriptionToken);
+
+        if (serviceName == null || envName == null || baseChannel == null) {
+            throw new RuntimeException("Failed to extract channel info from JWT");
+        }
+
+        this.gradualRolloutManager = new GradualRolloutManager(baseChannel, instanceName);
+        this.centrifugoManager = new CentrifugoManager(baseUrl, baseChannel, tokenFetcher,
+                gradualRolloutManager, this::handlePublication);
     }
 
     /**
      * Adds a callback that will be invoked when a config is updated.
-     * Callbacks are stored in a thread-safe CopyOnWriteArrayList.
-     * 
+     *
      * @param callback the callback to be invoked on config updates
      */
     public void addCallback(Consumer<Config> callback) {
@@ -94,178 +101,78 @@ public class Client {
     }
 
     /**
-     * Subscribes to centrifugo websocket channel.
-     * Gets latest configs by service and env, stores them in cache, calls callbacks
-     * for each config.
-     * 
-     * To get latest configs it sends an HTTP request on
-     * /v1/configs?serviceName=...&environment=...
-     * 
-     * When a publication arrives to the centrifugo channel - stores in cache, calls
-     * callback. If config version is less than current - ignore this version, just
-     * log it.
-     * 
-     * Centrifugo will send messages like: {"key": "some_key", "version": 4,
-     * "payload": "DATA"}
+     * Subscribes to centrifugo websocket channel and starts receiving updates.
      */
     public void run() {
-        // First, fetch connection token synchronously
-        String connectionToken = fetchConnectionToken();
-        if (connectionToken == null) {
-            throw new RuntimeException("Failed to obtain connection JWT token. Check API key and server availability.");
-        }
+        String connectionToken = fetchConnectionTokenSafely();
+        String subscriptionToken = fetchSubscriptionTokenSafely();
 
-        // Fetch subscription token and extract channel from it
-        String subscriptionToken = fetchSubscriptionToken();
-        if (subscriptionToken == null) {
-            throw new RuntimeException("Failed to obtain subscription JWT token. Check API key and server availability.");
-        }
-
-        // Extract channel from subscription JWT
-        extractChannelFromJwt(subscriptionToken);
-
-        if (channel == null) {
-            throw new RuntimeException("Failed to extract channel from subscription JWT token.");
-        }
-
-        if (serviceName == null || envName == null) {
-            throw new RuntimeException("Failed to parse channel info from JWT: " + channel);
-        }
-
-        connectToCentrifugo(connectionToken, subscriptionToken);
+        centrifugoManager.connect(connectionToken, subscriptionToken, this::fetchInitialConfigs);
     }
 
+    /**
+     * Gets a config by key.
+     *
+     * @param key the config key
+     * @return the config, or null if not found
+     */
     public Config get(String key) {
         cacheLock.readLock().lock();
         try {
             var config = configCache.get(key);
-            if (config == null) {
-                return null;
-            }
-            return config.clone();
+            return config == null ? null : config.clone();
         } finally {
             cacheLock.readLock().unlock();
         }
     }
 
+    /**
+     * Shuts down the client and disconnects from Centrifugo.
+     */
     public void shutdown() {
-        if (centrifugoClient != null) {
-            try {
-                centrifugoClient.disconnect();
-                LOGGER.info("Disconnected from Centrifugo");
-            } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "Error disconnecting from Centrifugo", e);
-            }
+        if (centrifugoManager != null) {
+            centrifugoManager.disconnect();
         }
     }
 
-    /**
-     * Fetches a connection JWT token from the config server.
-     * This token does NOT contain channel claim and is used for Centrifugo connection.
-     *
-     * @return the JWT token string, or null if the request failed
-     */
-    private String fetchConnectionToken() {
-        try {
-            String url = baseUrl + "/v1/api-keys/connection-token" +
-                    "?apiKey=" + URLEncoder.encode(apiKey, StandardCharsets.UTF_8) +
-                    "&serviceId=" + serviceId +
-                    "&environmentId=" + environmentId +
-                    "&instanceName=" + URLEncoder.encode(instanceName, StandardCharsets.UTF_8);
-
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Accept", "application/json")
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 200) {
-                String token = response.body();
-                if (token != null && !token.isEmpty()) {
-                    LOGGER.fine("Successfully obtained connection JWT token");
-                    return token;
-                }
-            }
-
-            LOGGER.warning("Failed to obtain connection JWT token. Status: " + response.statusCode() +
-                    ", body: " + response.body());
-            return null;
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error fetching connection JWT token", e);
-            return null;
+    private String fetchConnectionTokenSafely() {
+        String token = tokenFetcher.fetchConnectionToken();
+        if (token == null) {
+            throw new RuntimeException("Failed to obtain connection JWT token. Check API key and server availability.");
         }
+        return token;
+    }
+
+    private String fetchSubscriptionTokenSafely() {
+        String token = tokenFetcher.fetchSubscriptionToken();
+        if (token == null) {
+            throw new RuntimeException("Failed to obtain subscription JWT token. Check API key and server availability.");
+        }
+        return token;
     }
 
     /**
-     * Fetches a subscription JWT token from the config server.
-     * This token contains channel claim and is used for Centrifugo subscription.
-     *
-     * @return the JWT token string, or null if the request failed
-     */
-    private String fetchSubscriptionToken() {
-        try {
-            String url = baseUrl + "/v1/api-keys/subscription-token" +
-                    "?apiKey=" + URLEncoder.encode(apiKey, StandardCharsets.UTF_8) +
-                    "&serviceId=" + serviceId +
-                    "&environmentId=" + environmentId +
-                    "&instanceName=" + URLEncoder.encode(instanceName, StandardCharsets.UTF_8);
-
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Accept", "application/json")
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 200) {
-                String token = response.body();
-                if (token != null && !token.isEmpty()) {
-                    LOGGER.fine("Successfully obtained subscription JWT token");
-                    return token;
-                }
-            }
-
-            LOGGER.warning("Failed to obtain subscription JWT token. Status: " + response.statusCode() +
-                    ", body: " + response.body());
-            return null;
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error fetching subscription JWT token", e);
-            return null;
-        }
-    }
-
-    /**
-     * Extracts the channel claim from a JWT token and populates serviceName, envName, and channel.
-     * The channel format is "service:<service_name>:<env_code>".
-     *
-     * @param token the JWT token
+     * Extracts the channel claim from a JWT token and populates serviceName, envName, and baseChannel.
      */
     private void extractChannelFromJwt(String token) {
         try {
-            // JWT format: header.payload.signature
             String[] parts = token.split("\\.");
             if (parts.length != 3) {
                 LOGGER.warning("Invalid JWT token format");
                 return;
             }
 
-            // Decode the payload (middle part)
             String payload = new String(Base64.getUrlDecoder().decode(parts[1]), StandardCharsets.UTF_8);
-
-            // Parse JSON to extract channel claim
             Map<String, Object> claims = objectMapper.readValue(payload, Map.class);
             String channelValue = (String) claims.get("channel");
 
             if (channelValue != null && channelValue.startsWith("service:")) {
-                this.channel = channelValue;
+                this.baseChannel = channelValue;
                 String[] channelParts = channelValue.substring("service:".length()).split(":", 2);
                 if (channelParts.length == 2) {
                     this.serviceName = channelParts[0];
                     this.envName = channelParts[1];
-                    LOGGER.info("Extracted from JWT - serviceName: " + serviceName + ", envName: " + envName + ", channel: " + channel);
+                    LOGGER.info("Extracted from JWT - serviceName: " + serviceName + ", envName: " + envName + ", baseChannel: " + baseChannel);
                 }
             }
         } catch (Exception e) {
@@ -310,17 +217,12 @@ public class Client {
                 cacheLock.writeLock().lock();
                 try {
                     for (ConfigItem item : response.configs) {
-                        String key = item.configKey;
-                        int version = item.currentVersion;
-
-                        Config config = new Config(key, version, item.latestVersion.payload);
-                        configCache.put(key, config);
+                        Config config = new Config(item.configKey, item.currentVersion, item.latestVersion.payload);
+                        configCache.put(item.configKey, config);
                     }
                 } finally {
                     cacheLock.writeLock().unlock();
                 }
-
-                // Notify callbacks outside the lock to prevent deadlocks
                 notifyCallbacksForAllConfigs();
             }
         } catch (Exception e) {
@@ -328,126 +230,72 @@ public class Client {
         }
     }
 
-    private void connectToCentrifugo(String connectionToken, String subscriptionToken) {
-        try {
-            Options options = new Options();
-            // Set initial token for connection
-            options.setToken(connectionToken);
-            // Set token getter for connection-level authentication (for refresh)
-            options.setTokenGetter(new ConnectionTokenGetter() {
-                @Override
-                public void getConnectionToken(ConnectionTokenEvent event, TokenCallback cb) {
-                    String token = fetchConnectionToken();
-                    if (token == null) {
-                        LOGGER.severe("Failed to refresh connection JWT token");
-                        cb.Done(new RuntimeException("Failed to obtain connection JWT token"), null);
-                    } else {
-                        LOGGER.fine("Refreshed connection JWT token");
-                        cb.Done(null, token);
-                    }
-                }
-            });
-
-            String wsUrl = baseUrl.replace("http://", "ws://")
-                    .replace("https://", "wss://")
-                    + "/centrifugo/connection/websocket";
-
-            centrifugoClient = new io.github.centrifugal.centrifuge.Client(wsUrl, options, new EventListener() {
-                @Override
-                public void onConnected(io.github.centrifugal.centrifuge.Client client, ConnectedEvent event) {
-                    LOGGER.info("Connected to Centrifugo, fetching fresh configs");
-                    fetchInitialConfigs();
-                }
-            });
-
-            // Connect first
-            centrifugoClient.connect();
-
-            // Create subscription options with token getter for subscription-level authentication
-            SubscriptionOptions subOptions = new SubscriptionOptions();
-            // Set initial token
-            subOptions.setToken(subscriptionToken);
-            // Set token getter for automatic refresh
-            subOptions.setTokenGetter(new SubscriptionTokenGetter() {
-                @Override
-                public void getSubscriptionToken(SubscriptionTokenEvent event, TokenCallback cb) {
-                    String token = fetchSubscriptionToken();
-                    if (token == null) {
-                        LOGGER.severe("Failed to refresh subscription JWT token");
-                        cb.Done(new RuntimeException("Failed to obtain subscription JWT token"), null);
-                    } else {
-                        LOGGER.fine("Refreshed subscription JWT token");
-                        cb.Done(null, token);
-                    }
-                }
-            });
-
-            SubscriptionEventListener subListener = new SubscriptionEventListener() {
-                @Override
-                public void onPublication(Subscription sub, PublicationEvent event) {
-                    handlePublication(event);
-                }
-            };
-
-            // Use the channel extracted from subscription JWT
-            Subscription subscription = centrifugoClient.newSubscription(channel, subOptions, subListener);
-            subscription.subscribe();
-
-            LOGGER.info("Connected to Centrifugo and subscribed to channel: " + channel);
-        } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error connecting to Centrifugo", e);
-            throw new RuntimeException("Failed to connect to Centrifugo: " + e.getMessage(), e);
-        }
-    }
-
     /**
      * Handles a publication from Centrifugo.
-     * Parses the message and updates the cache if the version is newer.
-     * Uses write lock for thread-safe cache update with atomic version check.
+     * 
+     * @param event the publication event
+     * @param fromGradualChannel true if this publication came from a gradual rollout channel
      */
-    private void handlePublication(PublicationEvent event) {
+    private void handlePublication(PublicationEvent event, boolean fromGradualChannel) {
         try {
             byte[] data = event.getData();
+            if (data == null) return;
 
-            if (data != null) {
-                CentrifugoMessage message = objectMapper.readValue(data, CentrifugoMessage.class);
+            CentrifugoMessage message = objectMapper.readValue(data, CentrifugoMessage.class);
 
-                String key = message.key;
-                int newVersion = message.version;
-
-                // Thread-safe version check and update - must be atomic
-                Config newConfig = null;
-                cacheLock.writeLock().lock();
-                try {
-                    Config currentConfig = configCache.get(key);
-
-                    if (currentConfig == null || newVersion > currentConfig.version()) {
-                        newConfig = new Config(key, newVersion, message.payload);
-                        configCache.put(key, newConfig);
-
-                        LOGGER.info("Updated config '" + key + "' to version " + newVersion);
-                    } else {
-                        LOGGER.fine("Ignoring outdated config '" + key + "' version " + newVersion +
-                                ", current version is " + currentConfig.version());
-                    }
-                } finally {
-                    cacheLock.writeLock().unlock();
-                }
-
-                // Notify callbacks outside the lock to prevent deadlocks
-                if (newConfig != null) {
-                    notifyCallbacks(newConfig);
-                }
+            if ("gradual_start".equals(message.type)) {
+                handleGradualRollout(message);
+                return;
             }
+
+            handleConfigUpdate(message, fromGradualChannel);
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error handling publication", e);
         }
     }
 
-    /**
-     * Notifies all registered callbacks about a config update.
-     * Should be called outside of any locks to prevent deadlocks.
-     */
+    private void handleGradualRollout(CentrifugoMessage message) {
+        if (message.key == null || message.deployments == null) {
+            LOGGER.warning("Invalid gradual rollout message: missing key or deployments");
+            return;
+        }
+
+        int deploymentNumber = gradualRolloutManager.calculateDeploymentBucket(message.deployments);
+        LOGGER.info("Gradual rollout: key=" + message.key + ", deployment " + deploymentNumber + " of " + message.deployments);
+        centrifugoManager.subscribeToGradualChannel(message.key, deploymentNumber);
+    }
+
+    private void handleConfigUpdate(CentrifugoMessage message, boolean fromGradualChannel) {
+        String key = message.key;
+        int newVersion = message.version;
+
+        Config newConfig = null;
+        cacheLock.writeLock().lock();
+        try {
+            Config currentConfig = configCache.get(key);
+
+            if (currentConfig == null || newVersion > currentConfig.version()) {
+                newConfig = new Config(key, newVersion, message.payload);
+                configCache.put(key, newConfig);
+                LOGGER.info("Updated config '" + key + "' to version " + newVersion);
+            } else {
+                LOGGER.fine("Ignoring outdated config '" + key + "' version " + newVersion);
+            }
+        } finally {
+            cacheLock.writeLock().unlock();
+        }
+
+        if (newConfig != null) {
+            notifyCallbacks(newConfig);
+        }
+
+        // Auto-unsubscribe from gradual channel after receiving config update from it
+        if (fromGradualChannel) {
+            LOGGER.info("Received config update from gradual channel, unsubscribing...");
+            centrifugoManager.unsubscribeFromGradualChannel();
+        }
+    }
+
     private void notifyCallbacks(Config config) {
         for (Consumer<Config> callback : callbacks) {
             try {
@@ -458,10 +306,6 @@ public class Client {
         }
     }
 
-    /**
-     * Notifies callbacks for all configs currently in cache.
-     * Used after initial fetch. Called outside the lock.
-     */
     private void notifyCallbacksForAllConfigs() {
         List<Config> configsToNotify;
         cacheLock.readLock().lock();
@@ -470,49 +314,30 @@ public class Client {
         } finally {
             cacheLock.readLock().unlock();
         }
-
-        for (Config config : configsToNotify) {
-            notifyCallbacks(config);
-        }
+        configsToNotify.forEach(this::notifyCallbacks);
     }
 
     // --- DTO classes for JSON deserialization ---
 
-    /**
-     * Response from /v1/configs endpoint
-     */
     private static class ConfigListResponse {
         public List<ConfigItem> configs;
     }
 
-    /**
-     * Individual config item from the API response
-     */
     private static class ConfigItem {
         public String configKey;
         public int currentVersion;
         public VersionInfo latestVersion;
     }
 
-    /**
-     * Version information including payload.
-     * Uses Object to accept any JSON value (object, array, string, number, boolean,
-     * null).
-     * Serialized to byte[] for storage in Config.
-     */
     private static class VersionInfo {
         public Object payload;
     }
 
-    /**
-     * Message received from Centrifugo publication.
-     * Uses Object to accept any JSON value (object, array, string, number, boolean,
-     * null).
-     * Serialized to byte[] for storage in Config.
-     */
     private static class CentrifugoMessage {
+        public String type;
         public String key;
         public int version;
         public Object payload;
+        public Integer deployments;
     }
 }

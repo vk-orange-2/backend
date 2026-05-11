@@ -43,8 +43,19 @@ public class ApiKeyController {
             @RequestParam("apiKey") String apiKey,
             @RequestParam("serviceId") UUID serviceId,
             @RequestParam("environmentId") short environmentId,
-            @RequestParam(value = "instanceName", required = false) String instanceName) {
-        String jwt = service.getSubscriptionJwt(apiKey, serviceId, environmentId, instanceName);
+            @RequestParam(value = "instanceName", required = false) String instanceName,
+            @RequestParam(value = "configKey", required = false) String configKey,
+            @RequestParam(value = "percentage", required = false) Integer percentage) {
+        
+        String jwt;
+        if (configKey != null && percentage != null) {
+            // Gradual rollout channel subscription
+            jwt = service.getSubscriptionJwtForGradualChannel(apiKey, serviceId, environmentId, instanceName, configKey, percentage);
+        } else {
+            // Base channel subscription
+            jwt = service.getSubscriptionJwt(apiKey, serviceId, environmentId, instanceName);
+        }
+        
         if (jwt == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
