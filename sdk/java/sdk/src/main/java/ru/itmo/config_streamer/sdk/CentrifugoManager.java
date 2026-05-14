@@ -112,10 +112,10 @@ class CentrifugoManager {
      * Subscribes to a gradual rollout channel (keeps base channel subscription).
      *
      * @param rolloutKey the rollout key
-     * @param percentage the percentage bucket
+     * @param deploymentNumber the deployment number (1 to deployments)
      */
-    void subscribeToGradualChannel(String rolloutKey, int percentage) {
-        String gradualChannel = gradualRolloutManager.buildGradualChannel(rolloutKey, percentage);
+    void subscribeToGradualChannel(String rolloutKey, int deploymentNumber) {
+        String gradualChannel = gradualRolloutManager.buildGradualChannel(rolloutKey, deploymentNumber);
 
         if (gradualChannel.equals(currentGradualChannel) && gradualSubscription != null) {
             LOGGER.fine("Already subscribed to gradual channel: " + gradualChannel);
@@ -126,7 +126,7 @@ class CentrifugoManager {
         unsubscribeFromGradualChannel();
 
         try {
-            String token = tokenFetcher.fetchSubscriptionTokenForGradualChannel(rolloutKey, percentage);
+            String token = tokenFetcher.fetchSubscriptionTokenForGradualChannel(rolloutKey, deploymentNumber);
             if (token == null) {
                 LOGGER.severe("Failed to obtain subscription JWT token for gradual channel: " + gradualChannel);
                 return;

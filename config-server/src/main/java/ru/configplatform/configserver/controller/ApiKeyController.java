@@ -45,12 +45,12 @@ public class ApiKeyController {
             @RequestParam("environmentId") short environmentId,
             @RequestParam(value = "instanceName", required = false) String instanceName,
             @RequestParam(value = "configKey", required = false) String configKey,
-            @RequestParam(value = "percentage", required = false) Integer percentage) {
+            @RequestParam(value = "deployment", required = false) Integer deployment) {
         
         String jwt;
-        if (configKey != null && percentage != null) {
+        if (configKey != null && deployment != null) {
             // Gradual rollout channel subscription
-            jwt = service.getSubscriptionJwtForGradualChannel(apiKey, serviceId, environmentId, instanceName, configKey, percentage);
+            jwt = service.getSubscriptionJwtForGradualChannel(apiKey, serviceId, environmentId, instanceName, configKey, deployment);
         } else {
             // Base channel subscription
             jwt = service.getSubscriptionJwt(apiKey, serviceId, environmentId, instanceName);

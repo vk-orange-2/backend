@@ -1,5 +1,4 @@
 services:
-
   # ---- PostgreSQL ----
   postgres:
     image: postgres:16-alpine
@@ -13,7 +12,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U config_user -d config_platform" ]
+      test: ["CMD-SHELL", "pg_isready -U config_user -d config_platform"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -31,6 +30,7 @@ services:
       DB_USER: ${POSTGRES_USER:-config_user}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-config_pass}
       JWT_SECRET: ${JWT_SECRET}
+      API_KEY_ENCRYPTION_KEY: ${API_KEY_ENCRYPTION_KEY}
     ports:
       - "8081:8081"
     depends_on:
@@ -47,7 +47,7 @@ services:
     #   - 8000-8001:8000
     #   - 10000-10001:10000
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -78,7 +78,7 @@ services:
     volumes:
       - redis-data:/data
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5

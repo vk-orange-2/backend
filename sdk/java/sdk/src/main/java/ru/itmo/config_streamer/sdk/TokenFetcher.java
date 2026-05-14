@@ -52,13 +52,13 @@ class TokenFetcher {
      * Fetches a subscription JWT token for a gradual rollout channel.
      *
      * @param rolloutKey the rollout key identifier
-     * @param percentage the percentage bucket (1-100)
+     * @param deployment the deployment number
      */
-    String fetchSubscriptionTokenForGradualChannel(String rolloutKey, int percentage) {
+    String fetchSubscriptionTokenForGradualChannel(String configKey, int deployment) {
         String url = buildUrl("/v1/api-keys/subscription-token") +
-                "&rolloutKey=" + URLEncoder.encode(rolloutKey, StandardCharsets.UTF_8) +
-                "&percentage=" + percentage;
-        return fetchToken(url, "subscription (gradual channel: " + rolloutKey + ":" + percentage + "%)");
+                "&configKey=" + URLEncoder.encode(configKey, StandardCharsets.UTF_8) +
+                "&deployment=" + deployment;
+        return fetchToken(url, "subscription (gradual channel: " + configKey + ":" + deployment + ")");
     }
 
     private String buildUrl(String endpoint) {

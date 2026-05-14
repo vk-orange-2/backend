@@ -113,7 +113,7 @@ public class ApiKeyService {
 
         // Decrypt the stored key and compare
         String decryptedKey = decrypt(apiKey.getValue());
-        if (!apiKeyValue.equals(decryptedKey)) {
+        if (!apiKeyValue.equals(serviceId + ":" + environmentId + ":" + decryptedKey)) {
             return null;
         }
 
@@ -149,10 +149,10 @@ public class ApiKeyService {
      * Generates a subscription JWT token with channel claim.
      * Used for subscribing to the base Centrifugo channel.
      * 
-     * @param apiKeyValue the API key value
-     * @param serviceId the service ID
+     * @param apiKeyValue   the API key value
+     * @param serviceId     the service ID
      * @param environmentId the environment ID
-     * @param instanceName the instance name (can be null)
+     * @param instanceName  the instance name (can be null)
      * @return JWT token string, or null if validation fails
      */
     public String getSubscriptionJwt(String apiKeyValue, UUID serviceId, short environmentId, String instanceName) {
@@ -163,7 +163,7 @@ public class ApiKeyService {
 
         // Base channel: service:<service>:<env>
         String channel = "service:" + validated.serviceName() + ":" + validated.envCode();
-        
+
         SecretKey hmacKey = Keys.hmacShaKeyFor(jwtSigningKey.getBytes());
         var now = new Date();
         String subjectName = instanceName == null ? UUID.randomUUID().toString() : instanceName;
@@ -183,16 +183,16 @@ public class ApiKeyService {
      * 
      * The channel is constructed as: service:<service>:<env>:<key>:<percentage>%
      * 
-     * @param apiKeyValue the API key value
-     * @param serviceId the service ID
+     * @param apiKeyValue   the API key value
+     * @param serviceId     the service ID
      * @param environmentId the environment ID
-     * @param instanceName the instance name (can be null)
-     * @param configKey the rollout key identifier (e.g., "feature-x")
-     * @param percentage the percentage bucket (1-100)
+     * @param instanceName  the instance name (can be null)
+     * @param configKey     the rollout key identifier (e.g., "feature-x")
+     * @param percentage    the percentage bucket (1-100)
      * @return JWT token string, or null if validation fails
      */
-    public String getSubscriptionJwtForGradualChannel(String apiKeyValue, UUID serviceId, short environmentId, 
-            String instanceName, String configKey, Integer percentage) {
+    public String getSubscriptionJwtForGradualChannel(String apiKeyValue, UUID serviceId, short environmentId,
+            String instanceName, String configKey, Integer deployment) {
         ValidatedApiKey validated = validateApiKey(apiKeyValue, serviceId, environmentId);
         if (validated == null) {
             return null;
@@ -203,23 +203,21 @@ public class ApiKeyService {
             LOGGER.warning("Rollout key is required for gradual channel subscription");
             return null;
         }
-        
+
         // Validate key format (no colons or percent signs allowed)
         if (configKey.contains(":") || configKey.contains("%")) {
             LOGGER.warning("Invalid rollout key '" + configKey + "': must not contain ':' or '%'");
             return null;
         }
-        
-        // Validate percentage
-        if (percentage == null || percentage < 1 || percentage > 100) {
-            LOGGER.warning("Invalid percentage '" + percentage + "': must be between 1 and 100");
+
+        if (deployment == null) {
             return null;
         }
-        
+
         // Build gradual rollout channel: service:<service>:<env>:<key>:XX%
-        String channel = "service:" + validated.serviceName() + ":" + validated.envCode() + 
-                ":" + configKey + ":" + percentage + "%";
-        
+        String channel = "service:" + validated.serviceName() + ":" + validated.envCode() +
+                ":" + configKey + ":" + deployment;
+
         SecretKey hmacKey = Keys.hmacShaKeyFor(jwtSigningKey.getBytes());
         var now = new Date();
         String subjectName = instanceName == null ? UUID.randomUUID().toString() : instanceName;
@@ -232,11 +230,12 @@ public class ApiKeyService {
                 .signWith(hmacKey)
                 .compact();
     }
-    
+
     private static final Logger LOGGER = Logger.getLogger(ApiKeyService.class.getName());
 
     /** Internal record for validated API key data */
-    private record ValidatedApiKey(String serviceName, String envCode) {}
+    private record ValidatedApiKey(String serviceName, String envCode) {
+    }
 
     public String getApiKey(UUID serviceId, short environmentId) {
         var apiKeyId = new ApiKeyId(serviceId, environmentId);
