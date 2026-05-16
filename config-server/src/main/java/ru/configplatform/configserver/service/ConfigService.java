@@ -3,17 +3,13 @@ package ru.configplatform.configserver.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.*;
 import ru.configplatform.configserver.exception.*;
-import ru.configplatform.configserver.model.CentrifugoOutboxEntity;
 import ru.configplatform.configserver.model.ConfigEntity;
 import ru.configplatform.configserver.model.ConfigVersionEntity;
 import ru.configplatform.configserver.model.EnvironmentEntity;
-import ru.configplatform.configserver.model.RolloutEntity;
-import ru.configplatform.configserver.model.RolloutType;
 import ru.configplatform.configserver.model.ServiceEntity;
 import ru.configplatform.configserver.repository.ConfigRepository;
 import ru.configplatform.configserver.repository.ConfigVersionRepository;
@@ -22,9 +18,7 @@ import ru.configplatform.configserver.repository.RolloutRepository;
 import ru.configplatform.configserver.repository.ServiceRepository;
 import ru.configplatform.configserver.validation.PayloadValidator;
 
-import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -36,7 +30,6 @@ public class ConfigService {
     private final ConfigRepository configRepository;
     private final ConfigVersionRepository configVersionRepository;
     private final RolloutRepository rolloutRepository;
-    private final RolloutService rolloutService;
     private final PayloadValidator payloadValidator;
     private final DiffService diffService;
     private final AuditService auditService;
@@ -199,7 +192,7 @@ public class ConfigService {
 
     @Transactional(readOnly = true)
     public VersionHistoryResponse getVersionHistory(UUID configId) {
-        ConfigEntity config = configRepository.findById(configId)
+        configRepository.findById(configId)
                 .orElseThrow(() -> new ConfigNotFoundException(configId));
 
         List<VersionResponse> versions = configVersionRepository
@@ -268,104 +261,6 @@ public class ConfigService {
 
         Object payloadObj = deserializePayload(targetPayload);
         return toResponse(config, payloadObj);
-    }
-
-    /**
-     * Full state of all configs for a service+environment.
-     *
-     * For each config returns:
-     * 1. Last globally applied version (from last completed instant/gradual rollout,
-     *    or current version if no rollout)
-     * 2. Gradual rollout state (if active)
-     * 3. Canary version (if completed canary exists)
-     */
-    @Transactional(readOnly = true)
-    public ConfigStateResponse getServiceEnvState(String serviceName, String envCode) {
-        ServiceEntity service = serviceRepository.findByName(serviceName).orElse(null);
-        if (service == null) {
-            return ConfigStateResponse.builder()
-                    .serviceName(serviceName)
-                    .environment(envCode)
-                    .configs(List.of())
-                    .build();
-        }
-
-        EnvironmentEntity environment = resolveEnvironment(envCode);
-
-        List<ConfigEntity> configs = configRepository
-                .findByServiceAndEnvironmentAndStatus(service, environment, "active");
-
-        List<ConfigStateResponse.ConfigStateEntry> entries = configs.stream()
-                .map(config -> buildConfigStateEntry(config, serviceName, envCode))
-                .toList();
-
-        return ConfigStateResponse.builder()
-                .serviceName(serviceName)
-                .environment(envCode)
-                .configs(entries)
-                .build();
-    }
-
-    private ConfigStateResponse.ConfigStateEntry buildConfigStateEntry(
-            ConfigEntity config,
-            String serviceName,
-            String envCode
-    ) {
-
-//        TODO: пока сделала последнюю сохраненную, но на самом деле это должна быть версия последнего instant
-//         или завершенного gradual, при этом версия должна быть не не rolled back нутая
-//         (по идее допом это не нужно проверять, потому что rolled back создает новую версию)
-        // Global version = current version of the config
-        long globalVersion = config.getCurrentVersion();
-        Object globalPayload = loadLatestPayload(config);
-
-        // Check for active gradual rollout
-        ConfigStateResponse.GradualRolloutState gradualState = null;
-        RolloutEntity activeRollout = rolloutService.findActiveRolloutEntity(config.getId());
-        if (activeRollout != null && activeRollout.getType() == RolloutType.GRADUAL) {
-            ConfigVersionEntity targetVer = configVersionRepository
-                    .findByConfigIdAndVersion(config.getId(), activeRollout.getTargetVersion())
-                    .orElse(null);
-            Object targetPayload = targetVer != null ? deserializePayload(targetVer.getPayload()) : null;
-
-            gradualState = ConfigStateResponse.GradualRolloutState.builder()
-                    .rolloutId(activeRollout.getId())
-                    .targetVersion(activeRollout.getTargetVersion())
-                    .targetPayload(targetPayload)
-                    .totalDeployments(activeRollout.getTotalDeployments())
-                    .currentDeployment(activeRollout.getCurrentDeployment())
-                    .deploymentIntervalSeconds(activeRollout.getDeploymentIntervalSeconds())
-                    .status(activeRollout.getStatus().getValue())
-                    .build();
-        }
-
-        // Check for completed canary
-        ConfigStateResponse.CanaryState canaryState = null;
-        RolloutEntity canaryRollout = rolloutService.findCompletedCanaryForConfig(config.getId());
-        if (canaryRollout != null) {
-            ConfigVersionEntity canaryVer = configVersionRepository
-                    .findByConfigIdAndVersion(config.getId(), canaryRollout.getTargetVersion())
-                    .orElse(null);
-            Object canaryPayload = canaryVer != null ? deserializePayload(canaryVer.getPayload()) : null;
-
-            canaryState = ConfigStateResponse.CanaryState.builder()
-                    .rolloutId(canaryRollout.getId())
-                    .canaryVersion(canaryRollout.getTargetVersion())
-                    .canaryPayload(canaryPayload)
-                    .percentage(canaryRollout.getCanaryPercentage())
-                    .status(canaryRollout.getStatus().getValue())
-                    .build();
-        }
-
-        return ConfigStateResponse.ConfigStateEntry.builder()
-                .configId(config.getId())
-                .configKey(config.getConfigKey())
-                .isSecret(config.getIsSecret())
-                .globalVersion(globalVersion)
-                .globalPayload(globalPayload)
-                .gradualRollout(gradualState)
-                .canary(canaryState)
-                .build();
     }
 
     /**

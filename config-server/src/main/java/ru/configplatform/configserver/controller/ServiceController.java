@@ -18,6 +18,7 @@ import ru.configplatform.configserver.dto.ConfigStateResponse;
 import ru.configplatform.configserver.dto.CreateServiceRequest;
 import ru.configplatform.configserver.dto.ServiceResponse;
 import ru.configplatform.configserver.service.ConfigService;
+import ru.configplatform.configserver.service.ConfigStateService;
 
 import java.util.List;
 
@@ -28,6 +29,7 @@ import java.util.List;
 public class ServiceController {
 
     private final ConfigService configService;
+    private final ConfigStateService configStateService;
 
     @Operation(summary = "List all services")
     @GetMapping
@@ -57,6 +59,6 @@ public class ServiceController {
             @PathVariable @NotBlank String serviceName,
             @PathVariable @NotBlank String envCode
     ) {
-        return ResponseEntity.ok(configService.getServiceEnvState(serviceName, envCode));
+        return ResponseEntity.ok(configStateService.getServiceEnvState(serviceName, envCode));
     }
 }

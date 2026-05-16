@@ -76,7 +76,7 @@ public class RolloutService {
         validateCanaryPolicy(config, type, request.getCanaryPercentage(), request.getTotalDeployments(), serviceName, envCode);
 
         long targetVersion = config.getCurrentVersion();
-        long baseline = targetVersion > 1 ? targetVersion - 1 : 0; // TODO: разобраться с baseline для canary policy
+        long baseline = determineBaseline(config.getId(), type, targetVersion);
 
         String key = config.getConfigKey();
 
@@ -175,6 +175,32 @@ public class RolloutService {
                 serializePayload(auditData), ctx);
 
         return toResponse(rollout);
+    }
+
+    /**
+     * Определяет базовую версию для нового развертывания.
+     *
+     * Если конфигурация содержит completed canary rollout и мы создаем rollout, не являющийся canary
+     * (instant или gradual — т. е. повышение статуса canary version), то в качестве базовой версии должна использоваться базовая версия этого canary rollout
+     * это гарантирует, что при откате система вернется к состоянию, предшествовавшему canary rollout
+     *
+     * При создании нового canary rollout (замещающего старое) также следует унаследовать базовую версию от старого canary rollout,
+     * чтобы при откате система возвращалась к состоянию, предшествовавшему canary rollout (а не к промежуточной canary версии)
+     *
+     * В остальных случаях: базовая версия = целевая версия - 1 (или 0 — для самой первой версии)
+     */
+    private long determineBaseline(java.util.UUID configId, RolloutType newType, long targetVersion) {
+        var existingCanary = rolloutRepository.findCompletedCanaryByConfigId(configId);
+
+        if (existingCanary.isPresent()) {
+            RolloutEntity canary = existingCanary.get();
+            // For all types: if promoting or replacing canary, use canary's baseline
+            // so rollback goes to pre-canary state
+            return canary.getBaselineVersion();
+        }
+
+        // No canary — standard baseline
+        return targetVersion > 1 ? targetVersion - 1 : 0;
     }
 
     /**
@@ -332,13 +358,8 @@ public class RolloutService {
         return toResponse(rollout);
     }
 
-    // TODO: что-то мне кажется, что над rollback-ами нужно поработать
     /**
      * Rollback rollout (FR-52, AR-28)
-     *
-     * For canary rollouts in "completed" state:
-     * We allow rollback of completed canary — this is the "undo canary" operation.
-     * Creates a new version with baseline payload and publishes canary_rollback to the main channel.
      */
     @Transactional
     public RolloutResponse rollback(UUID rolloutId, RequestContext ctx) {
@@ -349,7 +370,6 @@ public class RolloutService {
         boolean isCanaryCompleted = rollout.getType() == RolloutType.CANARY
                 && rollout.getStatus() == RolloutStatus.COMPLETED;
 
-        // TODO: разобраться в этом условии, теперь оно мне кажется станным
         if (!rollout.isActive() && !isCanaryCompleted) {
             throw new RolloutNotActiveException(rolloutId, rollout.getStatus().getValue());
         }
