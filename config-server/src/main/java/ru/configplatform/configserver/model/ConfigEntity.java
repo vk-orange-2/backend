@@ -77,6 +77,7 @@ public class ConfigEntity {
         this.updatedAt = Instant.now();
     }
 
+//    TODO: кажется мы при обновлении конфигов и тд не проверяем на то, удален ли конфиг
     public boolean isActive() {
         return "active".equals(this.status);
     }

@@ -82,6 +82,7 @@ public class RolloutController {
         return ResponseEntity.ok(rolloutService.stop(id, ctx));
     }
 
+    //    TODO: для роллбэка с canary добавить возможность указывать версию, на которую хотим откатиться
     @Operation(
             summary = "Rollback rollout",
             description = "Rolls back the config to the baseline version of this rollout. "

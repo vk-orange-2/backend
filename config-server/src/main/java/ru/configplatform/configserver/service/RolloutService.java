@@ -407,6 +407,7 @@ public class RolloutService {
         rollout.advanceDeployment();
         int deploymentNumber = rollout.getCurrentDeployment();
 
+        //    TODO: выяснили, что проблематично использовать отдельные каналы, лучше использовать один основной и в него уже все публиковать
         // Публикуем в канал deployment-а:
         // service:<service_name>:<env_name>:<key>:<deployment_number>
         String channel = String.format("service:%s:%s:%s:%d", serviceName, envCode, key, deploymentNumber);
