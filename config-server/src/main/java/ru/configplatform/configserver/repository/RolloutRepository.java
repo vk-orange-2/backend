@@ -87,4 +87,18 @@ public interface RolloutRepository extends JpaRepository<RolloutEntity, UUID> {
         List<RolloutEntity> results = findByConfigIdTypeAndStatus(configId, RolloutType.CANARY, RolloutStatus.COMPLETED);
         return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
     }
+
+//    TODO: Unhandled exception: could not prepare statement [Функция "PG_ADVISORY_XACT_LOCK" не найдена
+//     Function "PG_ADVISORY_XACT_LOCK" not found; SQL statement:
+//     SELECT pg_advisory_xact_lock(hashtext(?)) [90022-232]] [SELECT pg_advisory_xact_lock(hashtext(?))]; SQL [SELECT pg_advisory_xact_lock(hashtext(?))]
+    /**
+     * Advisory lock scoped to service+environment.
+     * Prevents concurrent canary/rollout creation for the same service+env.
+     * Uses pg_advisory_xact_lock which auto-releases at transaction end.
+     *
+     * The lock key is derived from hashCode of service+env string,
+     * cast to bigint for PostgreSQL.
+     */
+    @Query(value = "SELECT pg_advisory_xact_lock(hashtext(:lockKey))", nativeQuery = true)
+    void acquireServiceEnvLock(@Param("lockKey") String lockKey);
 }

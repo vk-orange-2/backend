@@ -55,6 +55,17 @@ public class RolloutService {
         ConfigEntity config = configRepository.findByIdAndStatus(request.getConfigId(), "active")
                 .orElseThrow(() -> new ConfigNotFoundException(request.getConfigId()));
 
+        String serviceName = config.getService().getName();
+        String envCode = config.getEnvironment().getCode();
+
+        // ──────────────────────────────────────────────────────────
+        // Advisory lock: serializes all rollout creation
+        // for the same service+environment.
+        // Released automatically when transaction commits/rolls back.
+        // ──────────────────────────────────────────────────────────
+        String lockKey = "rollout:" + serviceName + ":" + envCode;
+        rolloutRepository.acquireServiceEnvLock(lockKey);
+
         // Проверяем, нет ли уже активного rollout
         rolloutRepository.findActiveByConfigId(config.getId()).ifPresent(existing -> {
             throw new ActiveRolloutExistsException(config.getId(), existing.getId());
@@ -69,10 +80,6 @@ public class RolloutService {
             }
         }
 
-        String serviceName = config.getService().getName();
-        String envCode = config.getEnvironment().getCode();
-
-        // Canary policy validation
         validateCanaryPolicy(config, type, request.getCanaryPercentage(), request.getTotalDeployments(), serviceName, envCode);
 
         long targetVersion = config.getCurrentVersion();
@@ -151,6 +158,7 @@ public class RolloutService {
                         .build();
                 rollout = rolloutRepository.save(rollout);
 
+//                TODO: а нужно ли
                 // Публикуем уведомление о начале gradual rollout
                 publishGradualStart(config, serviceName, envCode, key, targetVersion, totalDeployments, rollout.getId());
 
@@ -358,6 +366,7 @@ public class RolloutService {
         return toResponse(rollout);
     }
 
+//    TODO: обсудили, что для canary хотим уметь руками задавать, на какую версию откатываться (либо дефолтную)
     /**
      * Rollback rollout (FR-52, AR-28)
      */
