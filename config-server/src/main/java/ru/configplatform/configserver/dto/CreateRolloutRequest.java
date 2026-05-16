@@ -23,15 +23,15 @@ public class CreateRolloutRequest {
     private UUID configId;
 
     /**
-     * Тип rollout: "instant" или "gradual"
+     * Тип rollout: "instant", "gradual" или "canary"
      */
     @NotNull(message = "type is required")
-    @Schema(description = "Rollout type", example = "instant", allowableValues = {"instant", "gradual"})
+    @Schema(description = "Rollout type", example = "instant", allowableValues = {"instant", "gradual", "canary"})
     private String type;
 
     /**
      * Количество deployment-ов для gradual rollout.
-     * Для instant игнорируется (используется 1).
+     * Для instant и canary игнорируется.
      */
     @Min(value = 1, message = "totalDeployments must be >= 1")
     @Max(value = 100, message = "totalDeployments must be <= 100")
@@ -46,4 +46,12 @@ public class CreateRolloutRequest {
     @Builder.Default
     @Schema(description = "Interval between deployments in seconds", example = "60")
     private Integer deploymentIntervalSeconds = 60;
+
+    /**
+     * Процент canary-выборки (только для type=canary). От 1 до 100.
+     */
+    @Min(value = 1, message = "canaryPercentage must be >= 1")
+    @Max(value = 100, message = "canaryPercentage must be <= 100")
+    @Schema(description = "Canary percentage (only for canary rollout type)", example = "5")
+    private Integer canaryPercentage;
 }

@@ -41,6 +41,9 @@ public class RolloutResponse {
     @Schema(description = "Seconds between deployments")
     private Integer deploymentIntervalSeconds;
 
+    @Schema(description = "Canary percentage (only for canary rollouts)")
+    private Integer canaryPercentage;
+
     private Instant nextDeploymentAt;
     private Instant createdAt;
     private Instant startedAt;

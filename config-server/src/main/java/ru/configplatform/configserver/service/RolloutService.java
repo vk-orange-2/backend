@@ -12,6 +12,7 @@ import ru.configplatform.configserver.dto.DiffResponse;
 import ru.configplatform.configserver.dto.RequestContext;
 import ru.configplatform.configserver.dto.RolloutResponse;
 import ru.configplatform.configserver.exception.ActiveRolloutExistsException;
+import ru.configplatform.configserver.exception.CanaryPolicyViolationException;
 import ru.configplatform.configserver.exception.ConfigNotFoundException;
 import ru.configplatform.configserver.exception.RolloutNotActiveException;
 import ru.configplatform.configserver.exception.RolloutNotFoundException;
@@ -46,6 +47,8 @@ public class RolloutService {
      * Для instant — сразу публикуем в основной канал, статус completed
      * Для gradual — публикуем сообщение о начале gradual rollout,
      *               первый deployment отправляется сразу, остальные по расписанию
+     * Для canary  — публикуем canary_deploy в основной канал, статус completed
+     *               (canary "стоит" на месте, пока не будет promote или rollback)
      */
     @Transactional
     public RolloutResponse createAndStart(CreateRolloutRequest request, RequestContext ctx) {
@@ -59,20 +62,22 @@ public class RolloutService {
 
         RolloutType type = RolloutType.fromValue(request.getType());
 
-        // Для rollout нам нужна текущая версия как target (последняя опубликованная)
-        // baseline — это то, к чему мы откатимся при rollback
-        // В нашей модели: при создании rollout конфиг уже обновлён (новая версия создана),
-        // и rollout отвечает за ДОСТАВКУ этой версии клиентам.
-        // Поэтому baseline = version - 1 (предыдущая), target = currentVersion
-        //
-        // Но если baseline_version == 0, значит это первый конфиг — rollback невозможен,
-        // но rollout всё равно можно создать.
-
-        long targetVersion = config.getCurrentVersion();
-        long baseline = targetVersion > 1 ? targetVersion - 1 : 0;
+        // Валидация canary percentage
+        if (type == RolloutType.CANARY) {
+            if (request.getCanaryPercentage() == null) {
+                throw new IllegalArgumentException("canaryPercentage is required for canary rollout");
+            }
+        }
 
         String serviceName = config.getService().getName();
         String envCode = config.getEnvironment().getCode();
+
+        // Canary policy validation
+        validateCanaryPolicy(config, type, request.getCanaryPercentage(), request.getTotalDeployments(), serviceName, envCode);
+
+        long targetVersion = config.getCurrentVersion();
+        long baseline = targetVersion > 1 ? targetVersion - 1 : 0; // TODO: разобраться с baseline для canary policy
+
         String key = config.getConfigKey();
 
         ConfigVersionEntity targetVersionEntity = configVersionRepository
@@ -83,59 +88,174 @@ public class RolloutService {
 
         RolloutEntity rollout;
 
-        if (type == RolloutType.INSTANT) {
-            rollout = RolloutEntity.builder()
-                    .config(config)
-                    .type(type)
-                    .status(RolloutStatus.COMPLETED)
-                    .baselineVersion(baseline)
-                    .targetVersion(targetVersion)
-                    .totalDeployments(1)
-                    .currentDeployment(1)
-                    .deploymentIntervalSeconds(0)
-                    .startedAt(Instant.now())
-                    .completedAt(Instant.now())
-                    .build();
-            rollout = rolloutRepository.save(rollout);
+        switch (type) {
+            case INSTANT -> {
+                rollout = RolloutEntity.builder()
+                        .config(config)
+                        .type(type)
+                        .status(RolloutStatus.COMPLETED)
+                        .baselineVersion(baseline)
+                        .targetVersion(targetVersion)
+                        .totalDeployments(1)
+                        .currentDeployment(1)
+                        .deploymentIntervalSeconds(0)
+                        .startedAt(Instant.now())
+                        .completedAt(Instant.now())
+                        .build();
+                rollout = rolloutRepository.save(rollout);
 
-            // Публикуем в основной канал
-            publishInstantUpdate(config, serviceName, envCode, key, targetVersion, payload, rollout.getId());
+                // Публикуем в основной канал
+                publishInstantUpdate(config, serviceName, envCode, key, targetVersion, payload, rollout.getId());
 
-        } else {
-            // gradual
-            int totalDeployments = request.getTotalDeployments() != null ? request.getTotalDeployments() : 1;
-            int intervalSeconds = request.getDeploymentIntervalSeconds() != null
-                    ? request.getDeploymentIntervalSeconds() : 60;
+                // Если это instant, который "промоутит" canary — помечаем canary rolled_back
+                markCanarySupersededForConfig(config.getId(), rollout.getId());
+            }
+            case CANARY -> {
+                rollout = RolloutEntity.builder()
+                        .config(config)
+                        .type(type)
+                        .status(RolloutStatus.COMPLETED)
+                        .baselineVersion(baseline)
+                        .targetVersion(targetVersion)
+                        .totalDeployments(1)
+                        .currentDeployment(1)
+                        .deploymentIntervalSeconds(0)
+                        .canaryPercentage(request.getCanaryPercentage())
+                        .startedAt(Instant.now())
+                        .completedAt(Instant.now())
+                        .build();
+                rollout = rolloutRepository.save(rollout);
 
-            rollout = RolloutEntity.builder()
-                    .config(config)
-                    .type(type)
-                    .status(RolloutStatus.IN_PROGRESS)
-                    .baselineVersion(baseline)
-                    .targetVersion(targetVersion)
-                    .totalDeployments(totalDeployments)
-                    .currentDeployment(0)
-                    .deploymentIntervalSeconds(intervalSeconds)
-                    .startedAt(Instant.now())
-                    .build();
-            rollout = rolloutRepository.save(rollout);
+                // Публикуем canary deploy в основной канал
+                publishCanaryDeploy(config, serviceName, envCode, key, targetVersion, payload,
+                        request.getCanaryPercentage(), rollout.getId());
 
-            // Публикуем уведомление о начале gradual rollout в основной канал
-            publishGradualStart(config, serviceName, envCode, key, targetVersion, totalDeployments, rollout.getId());
+                // Если заменяем предыдущий canary — помечаем старый как rolled_back
+                markCanarySupersededForConfig(config.getId(), rollout.getId());
+            }
+            case GRADUAL -> {
+                int totalDeployments = request.getTotalDeployments() != null ? request.getTotalDeployments() : 1;
+                int intervalSeconds = request.getDeploymentIntervalSeconds() != null
+                        ? request.getDeploymentIntervalSeconds() : 60;
 
-            // Сразу выполняем первый deployment
-            executeNextDeployment(rollout, config, serviceName, envCode, key, targetVersion, payload);
+                rollout = RolloutEntity.builder()
+                        .config(config)
+                        .type(type)
+                        .status(RolloutStatus.IN_PROGRESS)
+                        .baselineVersion(baseline)
+                        .targetVersion(targetVersion)
+                        .totalDeployments(totalDeployments)
+                        .currentDeployment(0)
+                        .deploymentIntervalSeconds(intervalSeconds)
+                        .startedAt(Instant.now())
+                        .build();
+                rollout = rolloutRepository.save(rollout);
+
+                // Публикуем уведомление о начале gradual rollout
+                publishGradualStart(config, serviceName, envCode, key, targetVersion, totalDeployments, rollout.getId());
+
+                // Сразу выполняем первый deployment
+                executeNextDeployment(rollout, config, serviceName, envCode, key, targetVersion, payload);
+
+                // Если это gradual, который "промоутит" canary — помечаем canary
+                markCanarySupersededForConfig(config.getId(), rollout.getId());
+            }
+            default -> throw new IllegalArgumentException("Unsupported rollout type: " + type);
         }
 
-        // Аудит
+        Map<String, Object> auditData = new LinkedHashMap<>();
+        auditData.put("rolloutId", rollout.getId().toString());
+        auditData.put("type", rollout.getType().getValue());
+        auditData.put("totalDeployments", rollout.getTotalDeployments());
+        if (rollout.getCanaryPercentage() != null) {
+            auditData.put("canaryPercentage", rollout.getCanaryPercentage());
+        }
+
         auditService.log(config, "ROLLOUT_START", baseline, targetVersion,
-                serializePayload(Map.of(
-                        "rolloutId", rollout.getId().toString(),
-                        "type", rollout.getType(),
-                        "totalDeployments", rollout.getTotalDeployments()
-                )), ctx);
+                serializePayload(auditData), ctx);
 
         return toResponse(rollout);
+    }
+
+    /**
+     * Проверяет ограничения политики canary rollout-а
+     *
+     * При наличии completed canary rollout-ов для сервиса и среды применяются следующие правила:
+     *
+     * Для той же конфигурации, в которой уже есть canary rollout:
+     * - canary rollout с тем же или большим процентом → OK
+     * - instant rollout → OK
+     * - gradual rollout → OK, но первый шаг должен охватывать как минимум процент canary rollout
+     * - rollback canary rollout → OK
+     *
+     * Для ДРУГОЙ конфигурации в том же сервисе и среде → OK
+     *
+     * все остальное → ЗАБЛОКИРОВАНО
+     */
+    private void validateCanaryPolicy(ConfigEntity config, RolloutType newType,
+                                      Integer newCanaryPercentage, Integer totalDeployments,
+                                      String serviceName, String envCode) {
+        List<RolloutEntity> completedCanaries = rolloutRepository
+                .findCompletedCanaryByServiceEnv(serviceName, envCode);
+
+        if (completedCanaries.isEmpty()) {
+            // Ограничения для canary отсутствуют
+            return;
+        }
+
+        // Get the canary percentage that's currently in effect (all completed canaries
+        // in a service+env must have the same percentage due to our policy)
+        int existingCanaryPercentage = completedCanaries.get(0).getCanaryPercentage();
+
+        // Check if this config already has a completed canary
+        boolean sameConfigHasCanary = completedCanaries.stream()
+                .anyMatch(r -> r.getConfig().getId().equals(config.getId()));
+
+        if (sameConfigHasCanary) {
+            switch (newType) {
+                case INSTANT:
+                    // Promoting canary to all → OK
+                    return;
+                case CANARY:
+                    // New canary on same config: must be same or greater percentage
+                    if (newCanaryPercentage < existingCanaryPercentage) {
+                        throw new CanaryPolicyViolationException(
+                                "New canary percentage (" + newCanaryPercentage
+                                        + ") must be >= existing canary percentage ("
+                                        + existingCanaryPercentage + ") for the same config");
+                    }
+                    return;
+                case GRADUAL:
+                    // Gradual promotion: each step covers 100/totalDeployments percent,
+                    // first step must be >= canary percentage
+                    int stepPercentage = totalDeployments != null && totalDeployments > 0
+                            ? 100 / totalDeployments : 100;
+                    if (stepPercentage < existingCanaryPercentage) {
+                        throw new CanaryPolicyViolationException(
+                                "Gradual rollout step size (" + stepPercentage
+                                        + "%) must be >= existing canary percentage ("
+                                        + existingCanaryPercentage + "%). "
+                                        + "Reduce totalDeployments to increase step size.");
+                    }
+                    return;
+                default:
+                    throw new CanaryPolicyViolationException(
+                            "Unsupported rollout type: " + newType);
+            }
+        }
+    }
+
+    /**
+     * Помечает любую ранее completed canary-версию для той же конфигурации как rolled_back
+     * (замещенную новым rollout). Пропускает rollout с идентификатором excludeRolloutId.
+     */
+    private void markCanarySupersededForConfig(UUID configId, UUID excludeRolloutId) {
+        rolloutRepository.findCompletedCanaryByConfigId(configId).ifPresent(oldCanary -> {
+            if (!oldCanary.getId().equals(excludeRolloutId)) {
+                oldCanary.markRolledBack();
+                rolloutRepository.save(oldCanary);
+            }
+        });
     }
 
     /**
@@ -212,20 +332,25 @@ public class RolloutService {
         return toResponse(rollout);
     }
 
+    // TODO: что-то мне кажется, что над rollback-ами нужно поработать
     /**
      * Rollback rollout (FR-52, AR-28)
      *
-     * 1. Определяет baseline version rollout
-     * 2. Выполняет глобальный rollback конфига к baseline (создавая новую версию)
-     * 3. Публикует новую версию всем через основной канал
-     * 4. Переводит rollout в rolled_back
+     * For canary rollouts in "completed" state:
+     * We allow rollback of completed canary — this is the "undo canary" operation.
+     * Creates a new version with baseline payload and publishes canary_rollback to the main channel.
      */
     @Transactional
     public RolloutResponse rollback(UUID rolloutId, RequestContext ctx) {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
                 .orElseThrow(() -> new RolloutNotFoundException(rolloutId));
 
-        if (!rollout.isActive()) {
+        // For canary completed rollouts, allow rollback (this is the "undo canary" path)
+        boolean isCanaryCompleted = rollout.getType() == RolloutType.CANARY
+                && rollout.getStatus() == RolloutStatus.COMPLETED;
+
+        // TODO: разобраться в этом условии, теперь оно мне кажется станным
+        if (!rollout.isActive() && !isCanaryCompleted) {
             throw new RolloutNotActiveException(rolloutId, rollout.getStatus().getValue());
         }
 
@@ -275,7 +400,16 @@ public class RolloutService {
         String envCode = config.getEnvironment().getCode();
         String key = config.getConfigKey();
 
-        publishInstantUpdate(config, serviceName, envCode, key, newVersion, baselinePayloadObj, rollout.getId());
+        if (isCanaryCompleted) {
+            // TODO: что такое canary rollback и почему решили не делать publishInstantUpdate?
+            // Publish canary_rollback to the main channel
+            publishCanaryRollback(config, serviceName, envCode, key, newVersion,
+                    baselinePayloadObj, rollout.getId());
+        } else {
+            // Standard rollback — publish to main channel
+            publishInstantUpdate(config, serviceName, envCode, key, newVersion,
+                    baselinePayloadObj, rollout.getId());
+        }
 
         // Переводим rollout в rolled_back
         rollout.markRolledBack();
@@ -284,14 +418,16 @@ public class RolloutService {
         // Аудит: ROLLBACK (стандартный)
         auditService.log(config, "ROLLBACK", previousVersion, newVersion, diffJson, ctx);
 
-        // Аудит: ROLLOUT_ROLLBACK
+        Map<String, Object> auditData = new LinkedHashMap<>();
+        auditData.put("rolloutId", rollout.getId().toString());
+        auditData.put("baselineVersion", baselineVersion);
+        auditData.put("newVersion", newVersion);
+        if (isCanaryCompleted) {
+            auditData.put("canaryRollback", true);
+        }
+
         auditService.log(config, "ROLLOUT_ROLLBACK", rollout.getBaselineVersion(),
-                newVersion,
-                serializePayload(Map.of(
-                        "rolloutId", rollout.getId().toString(),
-                        "baselineVersion", baselineVersion,
-                        "newVersion", newVersion
-                )), ctx);
+                newVersion, serializePayload(auditData), ctx);
 
         return toResponse(rollout);
     }
@@ -342,7 +478,6 @@ public class RolloutService {
 
     /**
      * Проверяет, есть ли активный rollout для данного конфига
-     * Используется ConfigService для блокировки обновлений
      */
     @Transactional(readOnly = true)
     public boolean hasActiveRollout(UUID configId) {
@@ -355,6 +490,22 @@ public class RolloutService {
     @Transactional(readOnly = true)
     public RolloutEntity findActiveRolloutEntity(UUID configId) {
         return rolloutRepository.findActiveByConfigId(configId).orElse(null);
+    }
+
+    /**
+     * Find completed canary rollout for a config (if any)
+     */
+    @Transactional(readOnly = true)
+    public RolloutEntity findCompletedCanaryForConfig(UUID configId) {
+        return rolloutRepository.findCompletedCanaryByConfigId(configId).orElse(null);
+    }
+
+    /**
+     * Find all completed canary rollouts for a service+env
+     */
+    @Transactional(readOnly = true)
+    public List<RolloutEntity> findCompletedCanariesForServiceEnv(String serviceName, String envCode) {
+        return rolloutRepository.findCompletedCanaryByServiceEnv(serviceName, envCode);
     }
 
     /**
@@ -444,6 +595,44 @@ public class RolloutService {
         publishToCentrifugo(channel, data, idempotencyKey);
     }
 
+    private void publishCanaryDeploy(ConfigEntity config, String serviceName,
+                                     String envCode, String key, long version,
+                                     Object payload, int percentage, UUID rolloutId) {
+        String channel = String.format("service:%s:%s", serviceName, envCode);
+        String idempotencyKey = String.format("canary:%s:v%d", config.getId(), version);
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("type", "canary_deploy");
+        data.put("configId", config.getId().toString());
+        data.put("key", key);
+        data.put("version", version);
+        data.put("payload", payload);
+        data.put("canaryPercentage", percentage);
+        data.put("rolloutId", rolloutId.toString());
+        data.put("timestamp", Instant.now().toString());
+
+        publishToCentrifugo(channel, data, idempotencyKey);
+    }
+
+    private void publishCanaryRollback(ConfigEntity config, String serviceName,
+                                       String envCode, String key, long version,
+                                       Object payload, UUID rolloutId) {
+        String channel = String.format("service:%s:%s", serviceName, envCode);
+        String idempotencyKey = String.format("canary-rb:%s:v%d", config.getId(), version);
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("type", "canary_rollback");
+        data.put("configId", config.getId().toString());
+        data.put("key", key);
+        data.put("version", version);
+        data.put("payload", payload);
+        data.put("rolloutId", rolloutId.toString());
+        data.put("timestamp", Instant.now().toString());
+
+        publishToCentrifugo(channel, data, idempotencyKey);
+    }
+
+//    TODO: а нужно ли это, при условии, что хотим переехать на единый канал
     private void publishGradualStart(ConfigEntity config, String serviceName,
                                      String envCode, String key, long version,
                                      int totalDeployments, UUID rolloutId) {
@@ -494,6 +683,7 @@ public class RolloutService {
                 .totalDeployments(entity.getTotalDeployments())
                 .currentDeployment(entity.getCurrentDeployment())
                 .deploymentIntervalSeconds(entity.getDeploymentIntervalSeconds())
+                .canaryPercentage(entity.getCanaryPercentage())
                 .nextDeploymentAt(entity.getNextDeploymentAt())
                 .createdAt(entity.getCreatedAt())
                 .startedAt(entity.getStartedAt())

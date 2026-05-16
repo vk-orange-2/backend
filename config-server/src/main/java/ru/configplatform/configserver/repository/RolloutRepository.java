@@ -6,6 +6,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import ru.configplatform.configserver.model.RolloutEntity;
 import ru.configplatform.configserver.model.RolloutStatus;
+import ru.configplatform.configserver.model.RolloutType;
 
 import java.time.Instant;
 import java.util.List;
@@ -54,5 +55,36 @@ public interface RolloutRepository extends JpaRepository<RolloutEntity, UUID> {
     default List<RolloutEntity> findActiveByServiceAndEnvironment(String serviceName, String envCode) {
         return findActiveByServiceAndEnvironment(serviceName, envCode,
                 List.of(RolloutStatus.PENDING, RolloutStatus.IN_PROGRESS));
+    }
+
+    @Query("SELECT r FROM RolloutEntity r " +
+            "WHERE r.config.service.name = :serviceName " +
+            "AND r.config.environment.code = :envCode " +
+            "AND r.type = :type " +
+            "AND r.status = :status")
+    List<RolloutEntity> findByServiceEnvTypeAndStatus(
+            @Param("serviceName") String serviceName,
+            @Param("envCode") String envCode,
+            @Param("type") RolloutType type,
+            @Param("status") RolloutStatus status
+    );
+
+    default List<RolloutEntity> findCompletedCanaryByServiceEnv(String serviceName, String envCode) {
+        return findByServiceEnvTypeAndStatus(serviceName, envCode, RolloutType.CANARY, RolloutStatus.COMPLETED);
+    }
+
+    @Query("SELECT r FROM RolloutEntity r " +
+            "WHERE r.config.id = :configId " +
+            "AND r.type = :type " +
+            "AND r.status = :status")
+    List<RolloutEntity> findByConfigIdTypeAndStatus(
+            @Param("configId") UUID configId,
+            @Param("type") RolloutType type,
+            @Param("status") RolloutStatus status
+    );
+
+    default Optional<RolloutEntity> findCompletedCanaryByConfigId(UUID configId) {
+        List<RolloutEntity> results = findByConfigIdTypeAndStatus(configId, RolloutType.CANARY, RolloutStatus.COMPLETED);
+        return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
     }
 }

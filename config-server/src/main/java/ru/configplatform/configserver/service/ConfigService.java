@@ -12,6 +12,8 @@ import ru.configplatform.configserver.model.CentrifugoOutboxEntity;
 import ru.configplatform.configserver.model.ConfigEntity;
 import ru.configplatform.configserver.model.ConfigVersionEntity;
 import ru.configplatform.configserver.model.EnvironmentEntity;
+import ru.configplatform.configserver.model.RolloutEntity;
+import ru.configplatform.configserver.model.RolloutType;
 import ru.configplatform.configserver.model.ServiceEntity;
 import ru.configplatform.configserver.repository.ConfigRepository;
 import ru.configplatform.configserver.repository.ConfigVersionRepository;
@@ -34,6 +36,7 @@ public class ConfigService {
     private final ConfigRepository configRepository;
     private final ConfigVersionRepository configVersionRepository;
     private final RolloutRepository rolloutRepository;
+    private final RolloutService rolloutService;
     private final PayloadValidator payloadValidator;
     private final DiffService diffService;
     private final AuditService auditService;
@@ -41,18 +44,6 @@ public class ConfigService {
 
     /**
      * Создает новый конфиг или обновляет существующий (upsert по service+env+key)
-     *
-     * В одной транзакции:
-     * 1. Находит или создает сервис по имени
-     * 2. Находит окружение по коду
-     * 3. Находит или создает конфиг по (service, env, key)
-     * 4. Инкрементирует версию
-     * 5. Создает запись в config_versions (иммутабельная история)
-     * 6. Пишет в centrifugo_outbox → триггер делает pg_notify → Centrifugo пушит клиентам
-     *
-     * ВАЖНО: Публикация в Centrifugo НЕ происходит здесь.
-     * Доставка клиентам выполняется через Rollout API.
-     * Это позволяет разделить "сохранение новой версии" и "доставку клиентам".
      */
     @Transactional
     public ConfigResponse createOrUpdate(CreateConfigRequest request, RequestContext ctx) {
@@ -126,25 +117,17 @@ public class ConfigService {
         return toResponse(config, request.getValue());
     }
 
-    /**
-     * Получить конфиг по его идентификатору.
-     */
     @Transactional(readOnly = true)
     public ConfigResponse getById(UUID id) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
                 .orElseThrow(() -> new ConfigNotFoundException(id));
-
         Object payload = loadLatestPayload(config);
         return toResponse(config, payload);
     }
 
-    /**
-     * Получить конфиги по имени сервиса и окружению.
-     */
     @Transactional(readOnly = true)
     public ConfigListResponse getConfigs(String serviceName, String envCode) {
         ServiceEntity service = serviceRepository.findByName(serviceName).orElse(null);
-
         if (service == null) {
             return ConfigListResponse.builder()
                     .configs(List.of())
@@ -167,20 +150,12 @@ public class ConfigService {
                 .build();
     }
 
-    /**
-     * Обновить конфиг по его идентификатору.
-     *
-     * ВАЖНО: Публикация в Centrifugo НЕ происходит здесь.
-     * Доставка клиентам выполняется через Rollout API.
-     */
     @Transactional
     public ConfigResponse updateById(UUID id, UpdateConfigRequest request, RequestContext ctx) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
                 .orElseThrow(() -> new ConfigNotFoundException(id));
 
         checkVersion(request.getExpectedVersion(), config.getCurrentVersion());
-
-        // Блокировка при активном rollout
         checkNoActiveRollout(config.getId());
 
         payloadValidator.validate(request.getValue(), "json");
@@ -204,12 +179,6 @@ public class ConfigService {
         return toResponse(config, request.getValue());
     }
 
-    /**
-     * Удалить конфиг по его идентификатору.
-     *
-     * Удаление — особый случай. Оно НЕ требует rollout, т.к. это административная операция.
-     * Удалённый конфиг больше не существует.
-     */
     @Transactional
     public void deleteById(UUID id, Long expectedVersion, RequestContext ctx) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
@@ -218,10 +187,8 @@ public class ConfigService {
         checkVersion(expectedVersion, config.getCurrentVersion());
 
         config.markDeleted();
-
         long previousVersion = config.getCurrentVersion();
         long newVersion = previousVersion + 1;
-
         config.setCurrentVersion(newVersion);
         configRepository.save(config);
 
@@ -230,9 +197,6 @@ public class ConfigService {
         auditService.log(config, "DELETE", previousVersion, newVersion, null, ctx);
     }
 
-    /**
-     * Возвращает полную историю версий конфигурации.
-     */
     @Transactional(readOnly = true)
     public VersionHistoryResponse getVersionHistory(UUID configId) {
         ConfigEntity config = configRepository.findById(configId)
@@ -247,9 +211,6 @@ public class ConfigService {
         return VersionHistoryResponse.builder().versions(versions).build();
     }
 
-    /**
-     * Возвращает конкретную версию конфигурации.
-     */
     @Transactional(readOnly = true)
     public VersionResponse getVersion(UUID configId, long version) {
         configRepository.findById(configId)
@@ -262,9 +223,6 @@ public class ConfigService {
         return toVersionResponse(versionEntity);
     }
 
-    /**
-     * Вычисляет diff между двумя версиями конфигурации.
-     */
     @Transactional(readOnly = true)
     public DiffResponse getDiff(UUID configId, long versionFrom, long versionTo) {
         configRepository.findById(configId)
@@ -276,12 +234,6 @@ public class ConfigService {
         return diffService.computeDiff(payloadFrom, payloadTo, versionFrom, versionTo);
     }
 
-    /**
-     * Откатывает конфигурацию к указанной версии.
-     *
-     * Это "ручной" rollback конфига (не через rollout). Создаёт новую версию,
-     * но НЕ публикует в Centrifugo. Для доставки нужен rollout.
-     */
     @Transactional
     public ConfigResponse rollback(UUID configId, RollbackRequest request, RequestContext ctx) {
         ConfigEntity config = configRepository.findByIdAndStatus(configId, "active")
@@ -315,8 +267,105 @@ public class ConfigService {
         auditService.log(config, "ROLLBACK", previousVersion, newVersion, diffJson, ctx);
 
         Object payloadObj = deserializePayload(targetPayload);
-
         return toResponse(config, payloadObj);
+    }
+
+    /**
+     * Full state of all configs for a service+environment.
+     *
+     * For each config returns:
+     * 1. Last globally applied version (from last completed instant/gradual rollout,
+     *    or current version if no rollout)
+     * 2. Gradual rollout state (if active)
+     * 3. Canary version (if completed canary exists)
+     */
+    @Transactional(readOnly = true)
+    public ConfigStateResponse getServiceEnvState(String serviceName, String envCode) {
+        ServiceEntity service = serviceRepository.findByName(serviceName).orElse(null);
+        if (service == null) {
+            return ConfigStateResponse.builder()
+                    .serviceName(serviceName)
+                    .environment(envCode)
+                    .configs(List.of())
+                    .build();
+        }
+
+        EnvironmentEntity environment = resolveEnvironment(envCode);
+
+        List<ConfigEntity> configs = configRepository
+                .findByServiceAndEnvironmentAndStatus(service, environment, "active");
+
+        List<ConfigStateResponse.ConfigStateEntry> entries = configs.stream()
+                .map(config -> buildConfigStateEntry(config, serviceName, envCode))
+                .toList();
+
+        return ConfigStateResponse.builder()
+                .serviceName(serviceName)
+                .environment(envCode)
+                .configs(entries)
+                .build();
+    }
+
+    private ConfigStateResponse.ConfigStateEntry buildConfigStateEntry(
+            ConfigEntity config,
+            String serviceName,
+            String envCode
+    ) {
+
+//        TODO: пока сделала последнюю сохраненную, но на самом деле это должна быть версия последнего instant
+//         или завершенного gradual, при этом версия должна быть не не rolled back нутая
+//         (по идее допом это не нужно проверять, потому что rolled back создает новую версию)
+        // Global version = current version of the config
+        long globalVersion = config.getCurrentVersion();
+        Object globalPayload = loadLatestPayload(config);
+
+        // Check for active gradual rollout
+        ConfigStateResponse.GradualRolloutState gradualState = null;
+        RolloutEntity activeRollout = rolloutService.findActiveRolloutEntity(config.getId());
+        if (activeRollout != null && activeRollout.getType() == RolloutType.GRADUAL) {
+            ConfigVersionEntity targetVer = configVersionRepository
+                    .findByConfigIdAndVersion(config.getId(), activeRollout.getTargetVersion())
+                    .orElse(null);
+            Object targetPayload = targetVer != null ? deserializePayload(targetVer.getPayload()) : null;
+
+            gradualState = ConfigStateResponse.GradualRolloutState.builder()
+                    .rolloutId(activeRollout.getId())
+                    .targetVersion(activeRollout.getTargetVersion())
+                    .targetPayload(targetPayload)
+                    .totalDeployments(activeRollout.getTotalDeployments())
+                    .currentDeployment(activeRollout.getCurrentDeployment())
+                    .deploymentIntervalSeconds(activeRollout.getDeploymentIntervalSeconds())
+                    .status(activeRollout.getStatus().getValue())
+                    .build();
+        }
+
+        // Check for completed canary
+        ConfigStateResponse.CanaryState canaryState = null;
+        RolloutEntity canaryRollout = rolloutService.findCompletedCanaryForConfig(config.getId());
+        if (canaryRollout != null) {
+            ConfigVersionEntity canaryVer = configVersionRepository
+                    .findByConfigIdAndVersion(config.getId(), canaryRollout.getTargetVersion())
+                    .orElse(null);
+            Object canaryPayload = canaryVer != null ? deserializePayload(canaryVer.getPayload()) : null;
+
+            canaryState = ConfigStateResponse.CanaryState.builder()
+                    .rolloutId(canaryRollout.getId())
+                    .canaryVersion(canaryRollout.getTargetVersion())
+                    .canaryPayload(canaryPayload)
+                    .percentage(canaryRollout.getCanaryPercentage())
+                    .status(canaryRollout.getStatus().getValue())
+                    .build();
+        }
+
+        return ConfigStateResponse.ConfigStateEntry.builder()
+                .configId(config.getId())
+                .configKey(config.getConfigKey())
+                .isSecret(config.getIsSecret())
+                .globalVersion(globalVersion)
+                .globalPayload(globalPayload)
+                .gradualRollout(gradualState)
+                .canary(canaryState)
+                .build();
     }
 
     /**

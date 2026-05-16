@@ -110,6 +110,17 @@ public class GlobalExceptionHandler {
         ));
     }
 
+    @ExceptionHandler(CanaryPolicyViolationException.class)
+    public ResponseEntity<Map<String, Object>> handleCanaryPolicyViolation(CanaryPolicyViolationException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "error", Map.of(
+                        "code", "CANARY_POLICY_VIOLATION",
+                        "message", ex.getMessage(),
+                        "reason", ex.getReason()
+                )
+        ));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
         log.warn("Illegal argument: {}", ex.getMessage());
