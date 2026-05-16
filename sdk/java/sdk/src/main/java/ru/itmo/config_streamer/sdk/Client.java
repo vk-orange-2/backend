@@ -25,8 +25,6 @@ import io.github.centrifugal.centrifuge.PublicationEvent;
 import ru.itmo.config_streamer.sdk.dto.CentrifugoMessage;
 import ru.itmo.config_streamer.sdk.dto.ConfigItem;
 import ru.itmo.config_streamer.sdk.dto.ConfigListResponse;
-import ru.itmo.config_streamer.sdk.dto.RolloutResponse;
-import ru.itmo.config_streamer.sdk.dto.VersionInfo;
 
 /**
  * Main client for receiving configuration updates via Centrifugo WebSocket.
@@ -89,9 +87,8 @@ public class Client {
             throw new RuntimeException("Failed to extract channel info from JWT");
         }
 
-        this.gradualRolloutManager = new GradualRolloutManager(baseChannel, instanceName);
-        this.centrifugoManager = new CentrifugoManager(baseUrl, baseChannel, tokenFetcher,
-                gradualRolloutManager, this::handlePublication);
+        this.gradualRolloutManager = new GradualRolloutManager(instanceName);
+        this.centrifugoManager = new CentrifugoManager(baseUrl, baseChannel, tokenFetcher, this::handlePublication);
     }
 
     /**
@@ -212,69 +209,6 @@ public class Client {
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error fetching initial configs", e);
         }
-
-        // Fetch active rollouts to restore gradual rollout state on reconnect
-        fetchActiveRollouts();
-    }
-
-    /**
-     * Fetches active rollouts from the backend and subscribes to appropriate gradual channels.
-     * This is called on connect/reconnect to restore delivery state.
-     */
-    private void fetchActiveRollouts() {
-        if (serviceName == null || envName == null) {
-            return;
-        }
-
-        try {
-            String url = baseUrl + "/v1/rollouts/active?serviceName=" +
-                    URLEncoder.encode(serviceName, StandardCharsets.UTF_8) +
-                    "&environment=" + URLEncoder.encode(envName, StandardCharsets.UTF_8);
-
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Accept", "application/json")
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 200) {
-                RolloutResponse[] rollouts = objectMapper.readValue(response.body(), RolloutResponse[].class);
-                for (RolloutResponse rollout : rollouts) {
-                    handleActiveRollout(rollout);
-                }
-                if (rollouts.length > 0) {
-                    LOGGER.info("Restored " + rollouts.length + " active rollout(s) on reconnect");
-                }
-            } else {
-                LOGGER.warning("Failed to fetch active rollouts. Status: " + response.statusCode());
-            }
-        } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "Error fetching active rollouts (non-critical)", e);
-        }
-    }
-
-    /**
-     * Handles an active rollout fetched from the backend on reconnect.
-     * Subscribes to the gradual channel if this instance should receive the update.
-     */
-    private void handleActiveRollout(RolloutResponse rollout) {
-        if (!"gradual".equals(rollout.type) || rollout.totalDeployments == null || rollout.currentDeployment == null) {
-            return;
-        }
-
-        // Calculate which deployment bucket this instance belongs to
-        int myDeploymentNumber = gradualRolloutManager.calculateDeploymentBucket(rollout.totalDeployments);
-
-        // Only subscribe if my deployment number is <= current deployment
-        // (meaning the update has been deployed to my bucket)
-        if (myDeploymentNumber <= rollout.currentDeployment) {
-            LOGGER.info("Reconnect: subscribing to gradual channel for rollout " + rollout.id + 
-                    " (my deployment: " + myDeploymentNumber + ", current: " + rollout.currentDeployment + ")");
-            // Use configId.toString() as the rollout key since we need a key for channel naming
-            centrifugoManager.subscribeToGradualChannel(rollout.configId.toString(), myDeploymentNumber);
-        }
     }
 
     private void parseAndCacheConfigs(String responseBody) {
@@ -302,38 +236,48 @@ public class Client {
      * Handles a publication from Centrifugo.
      * 
      * @param event the publication event
-     * @param fromGradualChannel true if this publication came from a gradual rollout channel
      */
-    private void handlePublication(PublicationEvent event, boolean fromGradualChannel) {
+    private void handlePublication(PublicationEvent event) {
         try {
             byte[] data = event.getData();
             if (data == null) return;
 
             CentrifugoMessage message = objectMapper.readValue(data, CentrifugoMessage.class);
 
-            if ("gradual_start".equals(message.type)) {
-                handleGradualRollout(message);
+            if ("gradual_deploy".equals(message.type)) {
+                handleGradualDeploy(message);
                 return;
             }
 
-            handleConfigUpdate(message, fromGradualChannel);
+            // Regular config update
+            handleConfigUpdate(message);
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error handling publication", e);
         }
     }
 
-    private void handleGradualRollout(CentrifugoMessage message) {
-        if (message.key == null || message.deployments == null) {
-            LOGGER.warning("Invalid gradual rollout message: missing key or deployments");
+    /**
+     * Handles a gradual_deploy message.
+     * Only processes the update if this instance's bucket matches the deployment number.
+     */
+    private void handleGradualDeploy(CentrifugoMessage message) {
+        if (message.key == null || message.deployment == null || message.totalDeployments == null) {
+            LOGGER.warning("Invalid gradual_deploy message: missing required fields");
             return;
         }
 
-        int deploymentNumber = gradualRolloutManager.calculateDeploymentBucket(message.deployments);
-        LOGGER.info("Gradual rollout: key=" + message.key + ", deployment " + deploymentNumber + " of " + message.deployments);
-        centrifugoManager.subscribeToGradualChannel(message.key, deploymentNumber);
+        // Check if this instance should process this deployment
+        if (!gradualRolloutManager.shouldProcessGradualDeploy(message.deployment, message.totalDeployments)) {
+            return; // Not this instance's turn
+        }
+
+        LOGGER.info("Processing gradual_deploy for config '" + message.key + 
+                "' deployment " + message.deployment + " of " + message.totalDeployments);
+        
+        handleConfigUpdate(message);
     }
 
-    private void handleConfigUpdate(CentrifugoMessage message, boolean fromGradualChannel) {
+    private void handleConfigUpdate(CentrifugoMessage message) {
         String key = message.key;
         int newVersion = message.version;
 
@@ -355,12 +299,6 @@ public class Client {
 
         if (newConfig != null) {
             notifyCallbacks(newConfig);
-        }
-
-        // Auto-unsubscribe from gradual channel after receiving config update from it
-        if (fromGradualChannel) {
-            LOGGER.info("Received config update from gradual channel, unsubscribing...");
-            centrifugoManager.unsubscribeFromGradualChannel();
         }
     }
 

@@ -11,5 +11,10 @@ public class CentrifugoMessage {
     public String key;
     public int version;
     public Object payload;
-    public Integer deployments;
+    
+    // Fields for gradual_deploy messages
+    public String configId;
+    public Integer deployment;
+    public Integer totalDeployments;
+    public String timestamp;
 }

@@ -45,20 +45,7 @@ class TokenFetcher {
      */
     String fetchSubscriptionToken() {
         String url = buildUrl("/v1/api-keys/subscription-token");
-        return fetchToken(url, "subscription (base channel)");
-    }
-
-    /**
-     * Fetches a subscription JWT token for a gradual rollout channel.
-     *
-     * @param rolloutKey the rollout key identifier
-     * @param deployment the deployment number
-     */
-    String fetchSubscriptionTokenForGradualChannel(String configKey, int deployment) {
-        String url = buildUrl("/v1/api-keys/subscription-token") +
-                "&configKey=" + URLEncoder.encode(configKey, StandardCharsets.UTF_8) +
-                "&deployment=" + deployment;
-        return fetchToken(url, "subscription (gradual channel: " + configKey + ":" + deployment + ")");
+        return fetchToken(url, "subscription");
     }
 
     private String buildUrl(String endpoint) {

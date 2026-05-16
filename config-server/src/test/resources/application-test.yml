@@ -25,7 +25,7 @@ config_platform:
   jwt:
     signingKey: test-jwt-signing-key-for-testing-purposes-only
   apiKey:
-    encryptionKey: MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=
+    encryptionKey: 12345678901234567890123456789012
 
 scheduler:
   enabled: false
