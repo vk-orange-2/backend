@@ -78,6 +78,38 @@ public class GlobalExceptionHandler {
         ));
     }
 
+    @ExceptionHandler(ActiveRolloutExistsException.class)
+    public ResponseEntity<Map<String, Object>> handleActiveRolloutExists(ActiveRolloutExistsException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "error", Map.of(
+                        "code", "ACTIVE_ROLLOUT_EXISTS",
+                        "message", ex.getMessage(),
+                        "configId", ex.getConfigId().toString(),
+                        "rolloutId", ex.getRolloutId().toString()
+                )
+        ));
+    }
+
+    @ExceptionHandler(RolloutNotFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleRolloutNotFound(RolloutNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                "error", Map.of(
+                        "code", "ROLLOUT_NOT_FOUND",
+                        "message", ex.getMessage()
+                )
+        ));
+    }
+
+    @ExceptionHandler(RolloutNotActiveException.class)
+    public ResponseEntity<Map<String, Object>> handleRolloutNotActive(RolloutNotActiveException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "error", Map.of(
+                        "code", "ROLLOUT_NOT_ACTIVE",
+                        "message", ex.getMessage()
+                )
+        ));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
         log.warn("Illegal argument: {}", ex.getMessage());
@@ -117,6 +149,8 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
                 "error", Map.of(
                         "code", "INTERNAL_ERROR",
-                        "message", "An unexpected error occurred")));
+                        "message", "An unexpected error occurred " + ex.getMessage()
+                )
+        ));
     }
 }

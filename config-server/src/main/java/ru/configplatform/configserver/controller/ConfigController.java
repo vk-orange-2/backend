@@ -1,5 +1,8 @@
 package ru.configplatform.configserver.controller;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -22,26 +25,33 @@ import ru.configplatform.configserver.dto.DeleteConfigRequest;
 import ru.configplatform.configserver.dto.DiffResponse;
 import ru.configplatform.configserver.dto.RequestContext;
 import ru.configplatform.configserver.dto.RollbackRequest;
+import ru.configplatform.configserver.dto.RolloutResponse;
 import ru.configplatform.configserver.dto.UpdateConfigRequest;
 import ru.configplatform.configserver.dto.VersionHistoryResponse;
 import ru.configplatform.configserver.dto.VersionResponse;
 import ru.configplatform.configserver.service.ConfigService;
+import ru.configplatform.configserver.service.RolloutService;
 
 import java.util.UUID;
 
 @RestController
 @RequestMapping("/v1/configs")
 @RequiredArgsConstructor
+@Tag(name = "Configs", description = "Configuration management. Note: saving config does NOT deliver it to clients. Use Rollout API for delivery operation.")
 public class ConfigController {
 
     private final ConfigService configService;
+    private final RolloutService rolloutService;
 
-    /**
-     * POST /v1/configs — создать или обновить конфиг.
-     */
+    @Operation(summary = "Create or update config",
+            description = "Creates new config or updates existing (upsert by service+env+key). "
+                    + "Does NOT publish to clients — use Rollout API for delivery this operation.")
+    @ApiResponse(responseCode = "201", description = "Config created (version 1)")
+    @ApiResponse(responseCode = "200", description = "Config updated (version incremented)")
+    @ApiResponse(responseCode = "409", description = "Version conflict or active rollout exists")
     @PostMapping
     public ResponseEntity<ConfigResponse> createOrUpdate(
-            @Valid @RequestBody  CreateConfigRequest request,
+            @Valid @RequestBody CreateConfigRequest request,
             HttpServletRequest httpRequest
     ) {
         RequestContext ctx = extractContext(httpRequest);
@@ -53,9 +63,7 @@ public class ConfigController {
                 .body(response);
     }
 
-    /**
-     * GET /v1/configs?serviceName=&environment= — список конфигов.
-     */
+    @Operation(summary = "List configs by service and environment")
     @GetMapping
     public ResponseEntity<ConfigListResponse> getConfigs(
             @RequestParam @NotBlank String serviceName,
@@ -65,17 +73,16 @@ public class ConfigController {
         return ResponseEntity.ok(response);
     }
 
-    /**
-     * GET /v1/configs/{id} — получить конфиг по ID.
-     */
+    @Operation(summary = "Get config by ID")
+    @ApiResponse(responseCode = "404", description = "Config not found or deleted")
     @GetMapping("/{id}")
     public ResponseEntity<ConfigResponse> getById(@PathVariable UUID id) {
         return ResponseEntity.ok(configService.getById(id));
     }
 
-    /**
-     * PUT /v1/configs/{id} — обновить value конфига по ID.
-     */
+    @Operation(summary = "Update config value by ID",
+            description = "Updates config value. Does NOT publish to clients — use Rollout API after updating for this.")
+    @ApiResponse(responseCode = "409", description = "Version conflict or active rollout exists")
     @PutMapping("/{id}")
     public ResponseEntity<ConfigResponse> updateById(
             @PathVariable UUID id,
@@ -86,9 +93,7 @@ public class ConfigController {
         return ResponseEntity.ok(configService.updateById(id, request, ctx));
     }
 
-    /**
-     * DELETE /v1/configs/{id} — мягкое удаление.
-     */
+    @Operation(summary = "Soft delete config")
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteById(
             @PathVariable UUID id,
@@ -100,19 +105,14 @@ public class ConfigController {
         return ResponseEntity.noContent().build();
     }
 
-    /**
-     * GET /v1/configs/{id}/versions — история версий (FR-21).
-     */
+    @Operation(summary = "Get version history")
     @GetMapping("/{id}/versions")
-    public ResponseEntity<VersionHistoryResponse> getVersionHistory(
-            @PathVariable UUID id
-    ) {
+    public ResponseEntity<VersionHistoryResponse> getVersionHistory(@PathVariable UUID id) {
         return ResponseEntity.ok(configService.getVersionHistory(id));
     }
 
-    /**
-     * GET /v1/configs/{id}/versions/{version} — конкретная версия (FR-22).
-     */
+    @Operation(summary = "Get specific version")
+    @ApiResponse(responseCode = "404", description = "Version not found")
     @GetMapping("/{id}/versions/{version}")
     public ResponseEntity<VersionResponse> getVersion(
             @PathVariable UUID id,
@@ -121,9 +121,7 @@ public class ConfigController {
         return ResponseEntity.ok(configService.getVersion(id, version));
     }
 
-    /**
-     * GET /v1/configs/{id}/diff?from=1&to=3 — diff между версиями (FR-25).
-     */
+    @Operation(summary = "Get diff between two versions")
     @GetMapping("/{id}/diff")
     public ResponseEntity<DiffResponse> getDiff(
             @PathVariable UUID id,
@@ -133,11 +131,8 @@ public class ConfigController {
         return ResponseEntity.ok(configService.getDiff(id, from, to));
     }
 
-    /**
-     * POST /v1/configs/{id}/rollback — откат к указанной версии (FR-23).
-     *
-     * Создает НОВУЮ версию с payload из targetVersion (FR-24).
-     */
+    @Operation(summary = "Rollback config to target version",
+            description = "Creates a NEW version with payload from targetVersion. Does NOT publish to clients.")
     @PostMapping("/{id}/rollback")
     public ResponseEntity<ConfigResponse> rollback(
             @PathVariable UUID id,
@@ -146,6 +141,20 @@ public class ConfigController {
     ) {
         RequestContext ctx = extractContext(httpRequest);
         return ResponseEntity.ok(configService.rollback(id, request, ctx));
+    }
+
+    @Operation(summary = "Get active rollout for config",
+            description = "Returns the currently active rollout (pending or in_progress). "
+                    + "Used by SDK on reconnect to determine delivery state.")
+    @ApiResponse(responseCode = "200", description = "Active rollout found")
+    @ApiResponse(responseCode = "204", description = "No active rollout")
+    @GetMapping("/{id}/active-rollout")
+    public ResponseEntity<RolloutResponse> getActiveRollout(@PathVariable UUID id) {
+        RolloutResponse rollout = rolloutService.getActiveByConfigId(id);
+        if (rollout == null) {
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.ok(rollout);
     }
 
     private RequestContext extractContext(HttpServletRequest request) {

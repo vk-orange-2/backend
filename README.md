@@ -7,16 +7,21 @@
 Из корня репозитория:
 
 ```bash
-# 1. Собрать config-server
+# 1. (пере)собрать config-server
 cd config-server
 ./gradlew build -x test
 cd ..
 
-# 2. Поднять всё
+# 2. поднять всё
 docker compose up -d --build
 
-# 3. Проверить
-curl http://localhost:8080/v1/services
+# 3. проверить
+curl http://localhost:8081/swagger-ui/index.html
+```
+
+Если сборка не работает, попробовать прогнать
+```
+gradle wrapper --gradle-version 9.1.0
 ```
 
 ### Только config-server (для разработки)

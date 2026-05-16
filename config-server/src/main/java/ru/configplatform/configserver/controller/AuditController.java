@@ -1,5 +1,7 @@
 package ru.configplatform.configserver.controller;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
@@ -16,10 +18,14 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/v1/audit")
 @RequiredArgsConstructor
+@Tag(name = "Audit", description = "Audit log for all configuration changes and rollout operations")
 public class AuditController {
 
     private final AuditService auditService;
 
+    @Operation(summary = "Search audit logs",
+            description = "Filter by serviceName, actor, time range, operation type, or configId. "
+                    + "Operations: CREATE, UPDATE, DELETE, ROLLBACK, ROLLOUT_START, ROLLOUT_STOP, ROLLOUT_ROLLBACK, ROLLOUT_COMPLETE")
     @GetMapping
     public ResponseEntity<AuditSearchResponse> search(
             @RequestParam(required = false) String serviceName,

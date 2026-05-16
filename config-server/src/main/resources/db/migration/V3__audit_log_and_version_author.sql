@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     service_name    TEXT NOT NULL,
     environment     TEXT NOT NULL,
     config_key      TEXT NOT NULL,
-    operation       TEXT NOT NULL CHECK (operation IN ('CREATE', 'UPDATE', 'DELETE', 'ROLLBACK')),
+    operation       TEXT NOT NULL,
     actor           TEXT NOT NULL DEFAULT 'anonymous',
     source_ip       TEXT,
     user_agent      TEXT,
