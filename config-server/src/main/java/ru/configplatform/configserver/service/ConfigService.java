@@ -111,6 +111,9 @@ public class ConfigService {
         return toResponse(config, request.getValue());
     }
 
+    /**
+     * Получить конфиг по его идентификатору.
+     */
     @Transactional(readOnly = true)
     public ConfigResponse getById(UUID id) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
@@ -119,6 +122,9 @@ public class ConfigService {
         return toResponse(config, payload);
     }
 
+    /**
+     * Получить конфиги по имени сервиса и окружению.
+     */
     @Transactional(readOnly = true)
     public ConfigListResponse getConfigs(String serviceName, String envCode) {
         ServiceEntity service = serviceRepository.findByName(serviceName).orElse(null);
@@ -144,6 +150,12 @@ public class ConfigService {
                 .build();
     }
 
+    /**
+     * Обновить конфиг по его идентификатору.
+     *
+     * ВАЖНО: Публикация в Centrifugo НЕ происходит здесь.
+     * Доставка клиентам выполняется через Rollout API.
+     */
     @Transactional
     public ConfigResponse updateById(UUID id, UpdateConfigRequest request, RequestContext ctx) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
@@ -174,6 +186,12 @@ public class ConfigService {
         return toResponse(config, request.getValue());
     }
 
+    /**
+     * Удалить конфиг по его идентификатору.
+     *
+     * Удаление — особый случай. Оно НЕ требует rollout, т.к. это административная операция.
+     * Удалённый конфиг больше не существует.
+     */
     @Transactional
     public void deleteById(UUID id, Long expectedVersion, RequestContext ctx) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
@@ -209,6 +227,9 @@ public class ConfigService {
         auditService.log(config, "DELETE", previousVersion, newVersion, null, ctx);
     }
 
+    /**
+     * Возвращает полную историю версий конфигурации.
+     */
     @Transactional(readOnly = true)
     public VersionHistoryResponse getVersionHistory(UUID configId) {
         ConfigEntity config = configRepository.findById(configId)
@@ -224,6 +245,9 @@ public class ConfigService {
         return VersionHistoryResponse.builder().versions(versions).build();
     }
 
+    /**
+     * Возвращает конкретную версию конфигурации.
+     */
     @Transactional(readOnly = true)
     public VersionResponse getVersion(UUID configId, long version) {
         ConfigEntity config = configRepository.findById(configId)
@@ -237,6 +261,9 @@ public class ConfigService {
         return toVersionResponse(versionEntity);
     }
 
+    /**
+     * Вычисляет diff между двумя версиями конфигурации.
+     */
     @Transactional(readOnly = true)
     public DiffResponse getDiff(UUID configId, long versionFrom, long versionTo) {
         ConfigEntity config = configRepository.findById(configId)
