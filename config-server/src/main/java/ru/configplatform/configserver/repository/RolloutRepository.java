@@ -40,8 +40,6 @@ public interface RolloutRepository extends JpaRepository<RolloutEntity, UUID> {
         return findReadyForNextDeployment(RolloutStatus.IN_PROGRESS, now);
     }
 
-    List<RolloutEntity> findByStatusOrderByCreatedAtDesc(RolloutStatus status);
-
     @Query("SELECT r FROM RolloutEntity r " +
             "WHERE r.config.service.name = :serviceName " +
             "AND r.config.environment.code = :envCode " +
@@ -88,17 +86,9 @@ public interface RolloutRepository extends JpaRepository<RolloutEntity, UUID> {
         return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
     }
 
-//    TODO: Unhandled exception: could not prepare statement [Функция "PG_ADVISORY_XACT_LOCK" не найдена
-//     Function "PG_ADVISORY_XACT_LOCK" not found; SQL statement:
-//     SELECT pg_advisory_xact_lock(hashtext(?)) [90022-232]] [SELECT pg_advisory_xact_lock(hashtext(?))]; SQL [SELECT pg_advisory_xact_lock(hashtext(?))]
-    /**
-     * Advisory lock scoped to service+environment.
-     * Prevents concurrent canary/rollout creation for the same service+env.
-     * Uses pg_advisory_xact_lock which auto-releases at transaction end.
-     *
-     * The lock key is derived from hashCode of service+env string,
-     * cast to bigint for PostgreSQL.
-     */
-    @Query(value = "SELECT pg_advisory_xact_lock(hashtext(:lockKey))", nativeQuery = true)
-    void acquireServiceEnvLock(@Param("lockKey") String lockKey);
+    @Query("SELECT r FROM RolloutEntity r WHERE r.config.id = :configId " +
+            "AND r.type IN ('instant', 'gradual') " +
+            "AND r.status = 'completed' " +
+            "ORDER BY r.completedAt DESC")
+    List<RolloutEntity> findCompletedFullRolloutsByConfigId(@Param("configId") UUID configId);
 }

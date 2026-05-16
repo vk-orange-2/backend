@@ -7,7 +7,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.ConfigStateResponse;
 import ru.configplatform.configserver.model.ConfigEntity;
-import ru.configplatform.configserver.model.ConfigVersionEntity;
 import ru.configplatform.configserver.model.EnvironmentEntity;
 import ru.configplatform.configserver.model.RolloutEntity;
 import ru.configplatform.configserver.model.RolloutStatus;
@@ -20,6 +19,7 @@ import ru.configplatform.configserver.repository.RolloutRepository;
 import ru.configplatform.configserver.repository.ServiceRepository;
 
 import java.util.List;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -36,9 +36,11 @@ public class ConfigStateService {
      * Full state of all configs for a service+environment.
      *
      * For each config returns:
-     * 1. Global version (current version of config)
-     * 2. Gradual rollout state (if active)
-     * 3. Canary version (if completed canary exists)
+     * 1. latestVersion — last saved version (may not be rolled out)
+     * 2. globalVersion — last version rolled out to ALL instances
+     *    (completed instant or completed gradual)
+     * 3. gradualRollout — active gradual rollout (in_progress)
+     * 4. canary — active canary deployment (completed canary rollout)
      */
     @Transactional(readOnly = true)
     public ConfigStateResponse getServiceEnvState(String serviceName, String envCode) {
@@ -70,18 +72,33 @@ public class ConfigStateService {
     }
 
     private ConfigStateResponse.ConfigStateEntry buildConfigStateEntry(ConfigEntity config) {
-        //        TODO: пока сделала последнюю сохраненную, но на самом деле это должна быть версия последнего instant
-//         или завершенного gradual, при этом версия должна быть не не rolled back нутая
-//         (по идее допом это не нужно проверять, потому что rolled back создает новую версию)
-        long globalVersion = config.getCurrentVersion();
-        Object globalPayload = loadPayload(config.getId(), globalVersion);
+        UUID configId = config.getId();
 
-        // Active gradual rollout
+        // Latest version (in DB, may not be rolled out)
+        long latestVersion = config.getCurrentVersion();
+        Object latestPayload = loadPayload(configId, latestVersion);
+
+        // Global version: last completed instant or gradual rollout
+        Long globalVersion = null;
+        Object globalPayload = null;
+
+        List<RolloutEntity> completedFullRollouts =
+                rolloutRepository.findCompletedFullRolloutsByConfigId(configId);
+
+        if (!completedFullRollouts.isEmpty()) {
+            RolloutEntity lastGlobal = completedFullRollouts.get(0);
+            globalVersion = lastGlobal.getTargetVersion();
+            globalPayload = loadPayload(configId, globalVersion);
+        }
+
+        // Active gradual rollout (in_progress)
         ConfigStateResponse.GradualRolloutState gradualState = null;
-        var activeRollout = rolloutRepository.findActiveByConfigId(config.getId());
-        if (activeRollout.isPresent() && activeRollout.get().getType() == RolloutType.GRADUAL) {
+        var activeRollout = rolloutRepository.findActiveByConfigId(configId);
+        if (activeRollout.isPresent()
+                && activeRollout.get().getType() == RolloutType.GRADUAL
+                && activeRollout.get().getStatus() == RolloutStatus.IN_PROGRESS) {
             RolloutEntity r = activeRollout.get();
-            Object targetPayload = loadPayload(config.getId(), r.getTargetVersion());
+            Object targetPayload = loadPayload(configId, r.getTargetVersion());
 
             gradualState = ConfigStateResponse.GradualRolloutState.builder()
                     .rolloutId(r.getId())
@@ -96,10 +113,10 @@ public class ConfigStateService {
 
         // Completed canary
         ConfigStateResponse.CanaryState canaryState = null;
-        var canaryRollout = rolloutRepository.findCompletedCanaryByConfigId(config.getId());
+        var canaryRollout = rolloutRepository.findCompletedCanaryByConfigId(configId);
         if (canaryRollout.isPresent()) {
             RolloutEntity c = canaryRollout.get();
-            Object canaryPayload = loadPayload(config.getId(), c.getTargetVersion());
+            Object canaryPayload = loadPayload(configId, c.getTargetVersion());
 
             canaryState = ConfigStateResponse.CanaryState.builder()
                     .rolloutId(c.getId())
@@ -111,9 +128,11 @@ public class ConfigStateService {
         }
 
         return ConfigStateResponse.ConfigStateEntry.builder()
-                .configId(config.getId())
+                .configId(configId)
                 .configKey(config.getConfigKey())
                 .isSecret(config.getIsSecret())
+                .latestVersion(latestVersion)
+                .latestPayload(latestPayload)
                 .globalVersion(globalVersion)
                 .globalPayload(globalPayload)
                 .gradualRollout(gradualState)
@@ -121,7 +140,7 @@ public class ConfigStateService {
                 .build();
     }
 
-    private Object loadPayload(java.util.UUID configId, long version) {
+    private Object loadPayload(UUID configId, long version) {
         return configVersionRepository
                 .findByConfigIdAndVersion(configId, version)
                 .map(v -> deserializePayload(v.getPayload()))

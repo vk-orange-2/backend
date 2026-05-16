@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import ru.configplatform.configserver.dto.CreateRolloutRequest;
 import ru.configplatform.configserver.dto.RequestContext;
+import ru.configplatform.configserver.dto.RollbackRolloutRequest;
 import ru.configplatform.configserver.dto.RolloutResponse;
 import ru.configplatform.configserver.service.RolloutService;
 
@@ -68,7 +69,7 @@ public class RolloutController {
 
     @Operation(
             summary = "Stop rollout",
-            description = "Stops further deployment propagation. "
+            description = "Stops further gradual deployment propagation. "
                     + "Clients that already received the update keep it. "
                     + "Global config version is NOT changed."
     )
@@ -82,20 +83,20 @@ public class RolloutController {
         return ResponseEntity.ok(rolloutService.stop(id, ctx));
     }
 
-    //    TODO: для роллбэка с canary добавить возможность указывать версию, на которую хотим откатиться
     @Operation(
-            summary = "Rollback rollout",
-            description = "Rolls back the config to the baseline version of this rollout. "
-                    + "Creates a new config version and publishes it to ALL clients immediately."
+            summary = "Rollback a rollout",
+            description = "Rolls back to the baseline version. For canary rollouts, "
+                    + "optionally specify a targetVersion to rollback to a specific version "
+                    + "instead of the default baseline."
     )
-    @ApiResponse(responseCode = "409", description = "Rollout is not active")
     @PostMapping("/{id}/rollback")
     public ResponseEntity<RolloutResponse> rollback(
             @PathVariable UUID id,
+            @RequestBody(required = false) RollbackRolloutRequest request,
             HttpServletRequest httpRequest
     ) {
         RequestContext ctx = extractContext(httpRequest);
-        return ResponseEntity.ok(rolloutService.rollback(id, ctx));
+        return ResponseEntity.ok(rolloutService.rollback(id, request, ctx));
     }
 
     @Operation(summary = "Deploy next batch (for gradual rollout)",

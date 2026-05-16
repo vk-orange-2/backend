@@ -7,20 +7,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import ru.configplatform.configserver.dto.CreateRolloutRequest;
-import ru.configplatform.configserver.dto.DiffResponse;
-import ru.configplatform.configserver.dto.RequestContext;
-import ru.configplatform.configserver.dto.RolloutResponse;
-import ru.configplatform.configserver.exception.ActiveRolloutExistsException;
-import ru.configplatform.configserver.exception.CanaryPolicyViolationException;
-import ru.configplatform.configserver.exception.ConfigNotFoundException;
-import ru.configplatform.configserver.exception.RolloutNotActiveException;
-import ru.configplatform.configserver.exception.RolloutNotFoundException;
+import ru.configplatform.configserver.dto.*;
+import ru.configplatform.configserver.exception.*;
 import ru.configplatform.configserver.model.*;
 import ru.configplatform.configserver.repository.CentrifugoOutboxRepository;
 import ru.configplatform.configserver.repository.ConfigRepository;
 import ru.configplatform.configserver.repository.ConfigVersionRepository;
 import ru.configplatform.configserver.repository.RolloutRepository;
+import ru.configplatform.configserver.service.lock.DistributedLockService;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -37,6 +31,7 @@ public class RolloutService {
     private final ConfigRepository configRepository;
     private final ConfigVersionRepository configVersionRepository;
     private final CentrifugoOutboxRepository centrifugoOutboxRepository;
+    private final DistributedLockService distributedLockService;
     private final AuditService auditService;
     private final DiffService diffService;
     private final ObjectMapper objectMapper;
@@ -58,15 +53,10 @@ public class RolloutService {
         String serviceName = config.getService().getName();
         String envCode = config.getEnvironment().getCode();
 
-        // ──────────────────────────────────────────────────────────
-        // Advisory lock: serializes all rollout creation
-        // for the same service+environment.
-        // Released automatically when transaction commits/rolls back.
-        // ──────────────────────────────────────────────────────────
+        // Serialize rollout creation for same service+env
         String lockKey = "rollout:" + serviceName + ":" + envCode;
-        rolloutRepository.acquireServiceEnvLock(lockKey);
+        distributedLockService.acquireTransactionLock(lockKey);
 
-        // Проверяем, нет ли уже активного rollout
         rolloutRepository.findActiveByConfigId(config.getId()).ifPresent(existing -> {
             throw new ActiveRolloutExistsException(config.getId(), existing.getId());
         });
@@ -157,10 +147,6 @@ public class RolloutService {
                         .startedAt(Instant.now())
                         .build();
                 rollout = rolloutRepository.save(rollout);
-
-//                TODO: а нужно ли
-                // Публикуем уведомление о начале gradual rollout
-                publishGradualStart(config, serviceName, envCode, key, targetVersion, totalDeployments, rollout.getId());
 
                 // Сразу выполняем первый deployment
                 executeNextDeployment(rollout, config, serviceName, envCode, key, targetVersion, payload);
@@ -366,12 +352,11 @@ public class RolloutService {
         return toResponse(rollout);
     }
 
-//    TODO: обсудили, что для canary хотим уметь руками задавать, на какую версию откатываться (либо дефолтную)
     /**
      * Rollback rollout (FR-52, AR-28)
      */
     @Transactional
-    public RolloutResponse rollback(UUID rolloutId, RequestContext ctx) {
+    public RolloutResponse rollback(UUID rolloutId, RollbackRolloutRequest request, RequestContext ctx) {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
                 .orElseThrow(() -> new RolloutNotFoundException(rolloutId));
 
@@ -384,20 +369,41 @@ public class RolloutService {
         }
 
         ConfigEntity config = rollout.getConfig();
-        long baselineVersion = rollout.getBaselineVersion();
 
-        if (baselineVersion == 0) {
-            throw new IllegalStateException("Cannot rollback rollout: baseline version is 0 (first config version)");
+        // Determine which version to rollback to
+        long rollbackToVersion;
+
+        if (request != null && request.getTargetVersion() != null) {
+            // Explicit target version (only for canary)
+            if (!isCanaryCompleted && rollout.getType() != RolloutType.CANARY) {
+                throw new IllegalArgumentException("Custom targetVersion is only supported for canary rollouts");
+            }
+
+            long requestedVersion = request.getTargetVersion();
+
+            // Validate that this version exists
+            configVersionRepository.findByConfigIdAndVersion(config.getId(), requestedVersion)
+                    .orElseThrow(() -> new VersionNotFoundException(
+                            config.getId(), requestedVersion));
+
+            rollbackToVersion = requestedVersion;
+        } else {
+            // Default: rollback to baseline
+            rollbackToVersion = rollout.getBaselineVersion();
         }
 
-        // Получаем payload baseline версии
-        ConfigVersionEntity baselineVersionEntity = configVersionRepository
-                .findByConfigIdAndVersion(config.getId(), baselineVersion)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Baseline version " + baselineVersion + " not found for config " + config.getId()));
+        if (rollbackToVersion == 0) {
+            throw new IllegalStateException(
+                    "Cannot rollback: target version is 0 (no previous version exists)");
+        }
 
-        String baselinePayload = baselineVersionEntity.getPayload();
-        Object baselinePayloadObj = deserializePayload(baselinePayload);
+        ConfigVersionEntity rollbackVersionEntity = configVersionRepository
+                .findByConfigIdAndVersion(config.getId(), rollbackToVersion)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Version " + rollbackToVersion + " not found for config " + config.getId()));
+
+        String rollbackPayload = rollbackVersionEntity.getPayload();
+        Object rollbackPayloadObj = deserializePayload(rollbackPayload);
 
         // Создаем новую версию конфига (FR-24)
         long previousVersion = config.getCurrentVersion();
@@ -406,13 +412,17 @@ public class RolloutService {
         config.setCurrentVersion(newVersion);
         configRepository.save(config);
 
+        String comment = request != null && request.getComment() != null
+                ? request.getComment()
+                : "Rollback from rollout " + rolloutId + " to version " + rollbackToVersion;
+
         ConfigVersionEntity newVersionEntity = ConfigVersionEntity.builder()
                 .config(config)
                 .version(newVersion)
-                .payload(baselinePayload)
+                .payload(rollbackPayload)
                 .changeType("rollback")
                 .author(ctx.getActor())
-                .comment("Rollback from rollout " + rolloutId + " to baseline version " + baselineVersion)
+                .comment(comment)
                 .build();
         configVersionRepository.save(newVersionEntity);
 
@@ -421,7 +431,7 @@ public class RolloutService {
                 .findByConfigIdAndVersion(config.getId(), previousVersion)
                 .map(ConfigVersionEntity::getPayload)
                 .orElse(null);
-        DiffResponse diff = diffService.computeDiff(currentPayload, baselinePayload, previousVersion, newVersion);
+        DiffResponse diff = diffService.computeDiff(currentPayload, rollbackPayload, previousVersion, newVersion);
         String diffJson = diffService.serializeDiff(diff);
 
         // Публикуем в основной канал (всем клиентам)
@@ -429,27 +439,19 @@ public class RolloutService {
         String envCode = config.getEnvironment().getCode();
         String key = config.getConfigKey();
 
-        if (isCanaryCompleted) {
-            // TODO: что такое canary rollback и почему решили не делать publishInstantUpdate?
-            // Publish canary_rollback to the main channel
-            publishCanaryRollback(config, serviceName, envCode, key, newVersion,
-                    baselinePayloadObj, rollout.getId());
-        } else {
-            // Standard rollback — publish to main channel
-            publishInstantUpdate(config, serviceName, envCode, key, newVersion,
-                    baselinePayloadObj, rollout.getId());
-        }
+        // Publish appropriate event
+        publishInstantUpdate(config, serviceName, envCode, key, newVersion, rollbackPayloadObj, rollout.getId());
 
         // Переводим rollout в rolled_back
         rollout.markRolledBack();
         rolloutRepository.save(rollout);
 
-        // Аудит: ROLLBACK (стандартный)
+        // Аудит
         auditService.log(config, "ROLLBACK", previousVersion, newVersion, diffJson, ctx);
 
         Map<String, Object> auditData = new LinkedHashMap<>();
         auditData.put("rolloutId", rollout.getId().toString());
-        auditData.put("baselineVersion", baselineVersion);
+        auditData.put("rollbackToVersion", rollbackToVersion);
         auditData.put("newVersion", newVersion);
         if (isCanaryCompleted) {
             auditData.put("canaryRollback", true);
@@ -587,10 +589,7 @@ public class RolloutService {
         rollout.advanceDeployment();
         int deploymentNumber = rollout.getCurrentDeployment();
 
-        //    TODO: выяснили, что проблематично использовать отдельные каналы, лучше использовать один основной и в него уже все публиковать
-        // Публикуем в канал deployment-а:
-        // service:<service_name>:<env_name>:<key>:<deployment_number>
-        String channel = String.format("service:%s:%s:%s:%d", serviceName, envCode, key, deploymentNumber);
+        String channel = String.format("service:%s:%s", serviceName, envCode);
         String idempotencyKey = String.format("rollout:%s:deploy:%d", rollout.getId(), deploymentNumber);
 
         Map<String, Object> data = new LinkedHashMap<>();
@@ -601,6 +600,7 @@ public class RolloutService {
         data.put("deployment", deploymentNumber);
         data.put("totalDeployments", rollout.getTotalDeployments());
         data.put("payload", payload);
+        data.put("rolloutId", rollout.getId().toString());
         data.put("timestamp", Instant.now().toString());
 
         publishToCentrifugo(channel, data, idempotencyKey);
@@ -643,38 +643,18 @@ public class RolloutService {
         publishToCentrifugo(channel, data, idempotencyKey);
     }
 
-    private void publishCanaryRollback(ConfigEntity config, String serviceName,
-                                       String envCode, String key, long version,
-                                       Object payload, UUID rolloutId) {
+    private void publishConfigDeleted(ConfigEntity config, String serviceName,
+                                      String envCode, String key, UUID rolloutId) {
         String channel = String.format("service:%s:%s", serviceName, envCode);
-        String idempotencyKey = String.format("canary-rb:%s:v%d", config.getId(), version);
+        String idempotencyKey = String.format("delete:%s", config.getId());
 
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("type", "canary_rollback");
+        data.put("type", "config_deleted");
         data.put("configId", config.getId().toString());
         data.put("key", key);
-        data.put("version", version);
-        data.put("payload", payload);
-        data.put("rolloutId", rolloutId.toString());
-        data.put("timestamp", Instant.now().toString());
-
-        publishToCentrifugo(channel, data, idempotencyKey);
-    }
-
-//    TODO: а нужно ли это, при условии, что хотим переехать на единый канал
-    private void publishGradualStart(ConfigEntity config, String serviceName,
-                                     String envCode, String key, long version,
-                                     int totalDeployments, UUID rolloutId) {
-        String channel = String.format("service:%s:%s", serviceName, envCode);
-        String idempotencyKey = String.format("rollout:%s:start", rolloutId);
-
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("type", "gradual_start");
-        data.put("configId", config.getId().toString());
-        data.put("key", key);
-        data.put("version", version);
-        data.put("deployments", totalDeployments);
-        data.put("rolloutId", rolloutId.toString());
+        if (rolloutId != null) {
+            data.put("rolloutId", rolloutId.toString());
+        }
         data.put("timestamp", Instant.now().toString());
 
         publishToCentrifugo(channel, data, idempotencyKey);

@@ -48,10 +48,10 @@ public class CreateRolloutRequest {
     private Integer deploymentIntervalSeconds = 60;
 
     /**
-     * Процент canary-выборки (только для type=canary). От 1 до 100.
+     * Процент canary-выборки (только для type=canary). От 1 до 99.
      */
     @Min(value = 1, message = "canaryPercentage must be >= 1")
-    @Max(value = 100, message = "canaryPercentage must be <= 100")
+    @Max(value = 99, message = "canaryPercentage must be < 100")
     @Schema(description = "Canary percentage (only for canary rollout type)", example = "5")
     private Integer canaryPercentage;
 }

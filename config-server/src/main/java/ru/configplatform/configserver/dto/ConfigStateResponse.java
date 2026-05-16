@@ -44,7 +44,13 @@ public class ConfigStateResponse {
         @Schema(description = "Whether config is secret")
         private Boolean isSecret;
 
-        @Schema(description = "Last globally applied version number")
+        @Schema(description = "Latest version saved in DB (may not be rolled out yet)")
+        private Long latestVersion;
+        @Schema(description = "Payload of the latest version")
+        private Object latestPayload;
+
+        @Schema(description = "Latest version rolled out to ALL instances "
+                + "(via completed instant or gradual). Null if never rolled out globally.")
         private Long globalVersion;
 
         @Schema(description = "Payload of the global version")

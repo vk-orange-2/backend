@@ -12,7 +12,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.CreateConfigRequest;
 import ru.configplatform.configserver.dto.DeleteConfigRequest;
-import ru.configplatform.configserver.dto.RollbackRequest;
+import ru.configplatform.configserver.dto.RollbackRolloutRequest;
 import ru.configplatform.configserver.dto.UpdateConfigRequest;
 
 import java.util.Map;
@@ -449,7 +449,7 @@ class ConfigControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(update)));
 
-        RollbackRequest rollback = RollbackRequest.builder()
+        RollbackRolloutRequest rollback = RollbackRolloutRequest.builder()
                 .targetVersion(1L)
                 .expectedVersion(2L)
                 .comment("reverting change")
@@ -473,7 +473,7 @@ class ConfigControllerTest {
     void shouldReturn409OnRollbackWithStaleVersion() throws Exception {
         String id = createConfigAndReturnId("test-rb409-svc", "dev", "rb409-key", "val");
 
-        RollbackRequest rollback = RollbackRequest.builder()
+        RollbackRolloutRequest rollback = RollbackRolloutRequest.builder()
                 .targetVersion(1L)
                 .expectedVersion(5L) // stale
                 .build();
@@ -488,7 +488,7 @@ class ConfigControllerTest {
     void shouldReturn404OnRollbackToNonexistentVersion() throws Exception {
         String id = createConfigAndReturnId("test-rb404-svc", "dev", "rb404-key", "val");
 
-        RollbackRequest rollback = RollbackRequest.builder()
+        RollbackRolloutRequest rollback = RollbackRolloutRequest.builder()
                 .targetVersion(999L)
                 .expectedVersion(1L)
                 .build();

@@ -24,7 +24,7 @@ import ru.configplatform.configserver.dto.CreateConfigRequest;
 import ru.configplatform.configserver.dto.DeleteConfigRequest;
 import ru.configplatform.configserver.dto.DiffResponse;
 import ru.configplatform.configserver.dto.RequestContext;
-import ru.configplatform.configserver.dto.RollbackRequest;
+import ru.configplatform.configserver.dto.RollbackRolloutRequest;
 import ru.configplatform.configserver.dto.RolloutResponse;
 import ru.configplatform.configserver.dto.UpdateConfigRequest;
 import ru.configplatform.configserver.dto.VersionHistoryResponse;
@@ -131,12 +131,13 @@ public class ConfigController {
         return ResponseEntity.ok(configService.getDiff(id, from, to));
     }
 
+//    TODO gочему это есть?
     @Operation(summary = "Rollback config to target version",
             description = "Creates a NEW version with payload from targetVersion. Does NOT publish to clients.")
     @PostMapping("/{id}/rollback")
     public ResponseEntity<ConfigResponse> rollback(
             @PathVariable UUID id,
-            @RequestBody @Valid RollbackRequest request,
+            @RequestBody @Valid RollbackRolloutRequest request,
             HttpServletRequest httpRequest
     ) {
         RequestContext ctx = extractContext(httpRequest);

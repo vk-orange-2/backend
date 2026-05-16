@@ -12,7 +12,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.CreateConfigRequest;
 import ru.configplatform.configserver.dto.DeleteConfigRequest;
-import ru.configplatform.configserver.dto.RollbackRequest;
+import ru.configplatform.configserver.dto.RollbackRolloutRequest;
 import ru.configplatform.configserver.dto.UpdateConfigRequest;
 
 import java.util.Map;
@@ -103,7 +103,7 @@ class AuditControllerTest {
                 .header("X-Author", "user-e")
                 .content(objectMapper.writeValueAsString(update)));
 
-        RollbackRequest rollback = RollbackRequest.builder()
+        RollbackRolloutRequest rollback = RollbackRolloutRequest.builder()
                 .targetVersion(1L)
                 .expectedVersion(2L).build();
 
