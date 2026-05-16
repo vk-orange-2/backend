@@ -90,38 +90,6 @@ class AuditControllerTest {
     }
 
     @Test
-    void shouldLogRollbackOperation() throws Exception {
-        String id = createConfigAndReturnId("audit-rb-svc", "dev", "rb-key",
-                Map.of("v", 1), "user-e");
-
-        UpdateConfigRequest update = UpdateConfigRequest.builder()
-                .value(Map.of("v", 2))
-                .expectedVersion(1L).build();
-
-        mockMvc.perform(put("/v1/configs/" + id)
-                .contentType(MediaType.APPLICATION_JSON)
-                .header("X-Author", "user-e")
-                .content(objectMapper.writeValueAsString(update)));
-
-        RollbackRolloutRequest rollback = RollbackRolloutRequest.builder()
-                .targetVersion(1L)
-                .expectedVersion(2L).build();
-
-        mockMvc.perform(post("/v1/configs/" + id + "/rollback")
-                .contentType(MediaType.APPLICATION_JSON)
-                .header("X-Author", "deployer")
-                .content(objectMapper.writeValueAsString(rollback)));
-
-        mockMvc.perform(get("/v1/audit")
-                        .param("serviceName", "audit-rb-svc")
-                        .param("operation", "ROLLBACK"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.entries[0].operation", is("ROLLBACK")))
-                .andExpect(jsonPath("$.entries[0].actor", is("deployer")))
-                .andExpect(jsonPath("$.entries[0].diff").exists());
-    }
-
-    @Test
     void shouldFilterByActor() throws Exception {
         createConfig("audit-actor-svc", "dev", "k1", "v1", "alice");
         createConfig("audit-actor-svc", "dev", "k2", "v2", "bob");

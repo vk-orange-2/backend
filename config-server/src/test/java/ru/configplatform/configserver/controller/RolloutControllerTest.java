@@ -377,47 +377,6 @@ class RolloutControllerTest {
     }
 
     @Test
-    void shouldGetActiveRolloutForConfig() throws Exception {
-        String configId = createConfigAndReturnId("rollout-active-svc", "dev", "active-key",
-                Map.of("v", 1));
-
-        UpdateConfigRequest update = UpdateConfigRequest.builder()
-                .value(Map.of("v", 2))
-                .expectedVersion(1L)
-                .build();
-        mockMvc.perform(put("/v1/configs/" + configId)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(update)));
-
-        CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
-                .configId(UUID.fromString(configId))
-                .type("gradual")
-                .totalDeployments(5)
-                .deploymentIntervalSeconds(60)
-                .build();
-
-        mockMvc.perform(post("/v1/rollouts")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(rolloutReq)))
-                .andExpect(status().isCreated());
-
-        mockMvc.perform(get("/v1/configs/" + configId + "/active-rollout"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status", is("in_progress")))
-                .andExpect(jsonPath("$.totalDeployments", is(5)))
-                .andExpect(jsonPath("$.currentDeployment", is(1)));
-    }
-
-    @Test
-    void shouldReturn204WhenNoActiveRollout() throws Exception {
-        String configId = createConfigAndReturnId("rollout-noactive-svc", "dev", "noactive-key",
-                Map.of("v", 1));
-
-        mockMvc.perform(get("/v1/configs/" + configId + "/active-rollout"))
-                .andExpect(status().isNoContent());
-    }
-
-    @Test
     void shouldAuditRolloutStart() throws Exception {
         String configId = createConfigAndReturnId("rollout-audit-svc", "dev", "audit-key",
                 Map.of("v", 1));

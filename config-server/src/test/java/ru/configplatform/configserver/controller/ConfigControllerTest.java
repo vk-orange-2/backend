@@ -437,69 +437,6 @@ class ConfigControllerTest {
     }
 
     @Test
-    void shouldRollbackToTargetVersion() throws Exception {
-        String id = createConfigAndReturnId("test-rb-svc", "dev", "rb-key",
-                Map.of("env", "original"));
-
-        UpdateConfigRequest update = UpdateConfigRequest.builder()
-                .value(Map.of("env", "modified"))
-                .expectedVersion(1L).build();
-
-        mockMvc.perform(put("/v1/configs/" + id)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(update)));
-
-        RollbackRolloutRequest rollback = RollbackRolloutRequest.builder()
-                .targetVersion(1L)
-                .expectedVersion(2L)
-                .comment("reverting change")
-                .build();
-
-        mockMvc.perform(post("/v1/configs/" + id + "/rollback")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Author", "deployer")
-                        .content(objectMapper.writeValueAsString(rollback)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.currentVersion", is(3)))
-                .andExpect(jsonPath("$.latestVersion.payload.env", is("original")));
-
-        mockMvc.perform(get("/v1/configs/" + id + "/versions"))
-                .andExpect(jsonPath("$.versions", hasSize(3)))
-                .andExpect(jsonPath("$.versions[0].changeType", is("rollback")))
-                .andExpect(jsonPath("$.versions[0].author", is("deployer")));
-    }
-
-    @Test
-    void shouldReturn409OnRollbackWithStaleVersion() throws Exception {
-        String id = createConfigAndReturnId("test-rb409-svc", "dev", "rb409-key", "val");
-
-        RollbackRolloutRequest rollback = RollbackRolloutRequest.builder()
-                .targetVersion(1L)
-                .expectedVersion(5L) // stale
-                .build();
-
-        mockMvc.perform(post("/v1/configs/" + id + "/rollback")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(rollback)))
-                .andExpect(status().isConflict());
-    }
-
-    @Test
-    void shouldReturn404OnRollbackToNonexistentVersion() throws Exception {
-        String id = createConfigAndReturnId("test-rb404-svc", "dev", "rb404-key", "val");
-
-        RollbackRolloutRequest rollback = RollbackRolloutRequest.builder()
-                .targetVersion(999L)
-                .expectedVersion(1L)
-                .build();
-
-        mockMvc.perform(post("/v1/configs/" + id + "/rollback")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(rollback)))
-                .andExpect(status().isNotFound());
-    }
-
-    @Test
     void shouldReturn400ForMissingKey() throws Exception {
         CreateConfigRequest request = CreateConfigRequest.builder()
                 .service("svc").env("dev").key("").value("val").build();

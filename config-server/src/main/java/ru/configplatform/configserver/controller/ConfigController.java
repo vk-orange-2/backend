@@ -1,6 +1,7 @@
 package ru.configplatform.configserver.controller;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -9,26 +10,8 @@ import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-import ru.configplatform.configserver.dto.ConfigListResponse;
-import ru.configplatform.configserver.dto.ConfigResponse;
-import ru.configplatform.configserver.dto.CreateConfigRequest;
-import ru.configplatform.configserver.dto.DeleteConfigRequest;
-import ru.configplatform.configserver.dto.DiffResponse;
-import ru.configplatform.configserver.dto.RequestContext;
-import ru.configplatform.configserver.dto.RollbackRolloutRequest;
-import ru.configplatform.configserver.dto.RolloutResponse;
-import ru.configplatform.configserver.dto.UpdateConfigRequest;
-import ru.configplatform.configserver.dto.VersionHistoryResponse;
-import ru.configplatform.configserver.dto.VersionResponse;
+import org.springframework.web.bind.annotation.*;
+import ru.configplatform.configserver.dto.*;
 import ru.configplatform.configserver.service.ConfigService;
 import ru.configplatform.configserver.service.RolloutService;
 
@@ -93,7 +76,7 @@ public class ConfigController {
         return ResponseEntity.ok(configService.updateById(id, request, ctx));
     }
 
-    @Operation(summary = "Soft delete config")
+    @Operation(summary = "Delete config by ID (soft delete). Also publishes event to centrifugo")
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteById(
             @PathVariable UUID id,
@@ -131,33 +114,6 @@ public class ConfigController {
         return ResponseEntity.ok(configService.getDiff(id, from, to));
     }
 
-//    TODO gочему это есть?
-    @Operation(summary = "Rollback config to target version",
-            description = "Creates a NEW version with payload from targetVersion. Does NOT publish to clients.")
-    @PostMapping("/{id}/rollback")
-    public ResponseEntity<ConfigResponse> rollback(
-            @PathVariable UUID id,
-            @RequestBody @Valid RollbackRolloutRequest request,
-            HttpServletRequest httpRequest
-    ) {
-        RequestContext ctx = extractContext(httpRequest);
-        return ResponseEntity.ok(configService.rollback(id, request, ctx));
-    }
-
-    @Operation(summary = "Get active rollout for config",
-            description = "Returns the currently active rollout (pending or in_progress). "
-                    + "Used by SDK on reconnect to determine delivery state.")
-    @ApiResponse(responseCode = "200", description = "Active rollout found")
-    @ApiResponse(responseCode = "204", description = "No active rollout")
-    @GetMapping("/{id}/active-rollout")
-    public ResponseEntity<RolloutResponse> getActiveRollout(@PathVariable UUID id) {
-        RolloutResponse rollout = rolloutService.getActiveByConfigId(id);
-        if (rollout == null) {
-            return ResponseEntity.noContent().build();
-        }
-        return ResponseEntity.ok(rollout);
-    }
-
     private RequestContext extractContext(HttpServletRequest request) {
         String author = request.getHeader("X-Author");
         if (author == null || author.isBlank()) {
@@ -175,4 +131,5 @@ public class ConfigController {
                 .userAgent(request.getHeader("User-Agent"))
                 .build();
     }
+
 }

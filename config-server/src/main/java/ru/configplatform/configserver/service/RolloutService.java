@@ -17,10 +17,7 @@ import ru.configplatform.configserver.repository.RolloutRepository;
 import ru.configplatform.configserver.service.lock.DistributedLockService;
 
 import java.time.Instant;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 @Service
 @RequiredArgsConstructor
@@ -47,8 +44,7 @@ public class RolloutService {
      */
     @Transactional
     public RolloutResponse createAndStart(CreateRolloutRequest request, RequestContext ctx) {
-        ConfigEntity config = configRepository.findByIdAndStatus(request.getConfigId(), "active")
-                .orElseThrow(() -> new ConfigNotFoundException(request.getConfigId()));
+        ConfigEntity config = findActiveConfig(request.getConfigId());
 
         String serviceName = config.getService().getName();
         String envCode = config.getEnvironment().getCode();
@@ -285,6 +281,7 @@ public class RolloutService {
     public RolloutResponse getById(UUID rolloutId) {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
                 .orElseThrow(() -> new RolloutNotFoundException(rolloutId));
+        ensureConfigActive(rollout.getConfig());
         return toResponse(rollout);
     }
 
@@ -293,23 +290,11 @@ public class RolloutService {
      */
     @Transactional(readOnly = true)
     public List<RolloutResponse> getByConfigId(UUID configId) {
-        return rolloutRepository.findByConfigIdOrderByCreatedAtDesc(configId)
+        ConfigEntity config = findActiveConfig(configId);
+        return rolloutRepository.findByConfigIdOrderByCreatedAtDesc(config.getId())
                 .stream()
                 .map(this::toResponse)
                 .toList();
-    }
-
-    /**
-     * Получить активный rollout для конфига (для SDK при реконнекте)
-     */
-    @Transactional(readOnly = true)
-    public RolloutResponse getActiveByConfigId(UUID configId) {
-        configRepository.findById(configId)
-                .orElseThrow(() -> new ConfigNotFoundException(configId));
-
-        return rolloutRepository.findActiveByConfigId(configId)
-                .map(this::toResponse)
-                .orElse(null);
     }
 
     /**
@@ -332,6 +317,8 @@ public class RolloutService {
     public RolloutResponse stop(UUID rolloutId, RequestContext ctx) {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
                 .orElseThrow(() -> new RolloutNotFoundException(rolloutId));
+
+        ensureConfigActive(rollout.getConfig());
 
         if (!rollout.isActive()) {
             throw new RolloutNotActiveException(rolloutId, rollout.getStatus().getValue());
@@ -360,6 +347,9 @@ public class RolloutService {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
                 .orElseThrow(() -> new RolloutNotFoundException(rolloutId));
 
+        ConfigEntity config = rollout.getConfig();
+        ensureConfigActive(config);
+
         // For canary completed rollouts, allow rollback (this is the "undo canary" path)
         boolean isCanaryCompleted = rollout.getType() == RolloutType.CANARY
                 && rollout.getStatus() == RolloutStatus.COMPLETED;
@@ -367,8 +357,6 @@ public class RolloutService {
         if (!rollout.isActive() && !isCanaryCompleted) {
             throw new RolloutNotActiveException(rolloutId, rollout.getStatus().getValue());
         }
-
-        ConfigEntity config = rollout.getConfig();
 
         // Determine which version to rollback to
         long rollbackToVersion;
@@ -392,15 +380,35 @@ public class RolloutService {
             rollbackToVersion = rollout.getBaselineVersion();
         }
 
-        if (rollbackToVersion == 0) {
-            throw new IllegalStateException(
-                    "Cannot rollback: target version is 0 (no previous version exists)");
+        return executeRollback(rollout, config, rollbackToVersion,
+                request != null ? request.getComment() : null, ctx);
+    }
+
+    /**
+     * Rollback a config to a specific version by creating an instant rollout.
+     * This is the replacement for ConfigService.rollback — it publishes to Centrifugo
+     * so SDK is notified.
+     */
+    @Transactional
+    public RolloutResponse rollbackConfig(UUID configId, RollbackRequest request,
+                                          RequestContext ctx) {
+        ConfigEntity config = findActiveConfig(configId);
+
+        if (!Objects.equals(request.getExpectedVersion(), config.getCurrentVersion())) {
+            throw new VersionConflictException(
+                    request.getExpectedVersion(), config.getCurrentVersion());
         }
 
+        // Check no active rollout
+        rolloutRepository.findActiveByConfigId(configId).ifPresent(existing -> {
+            throw new ActiveRolloutExistsException(configId, existing.getId());
+        });
+
+        long rollbackToVersion = request.getTargetVersion();
+
         ConfigVersionEntity rollbackVersionEntity = configVersionRepository
-                .findByConfigIdAndVersion(config.getId(), rollbackToVersion)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Version " + rollbackToVersion + " not found for config " + config.getId()));
+                .findByConfigIdAndVersion(configId, rollbackToVersion)
+                .orElseThrow(() -> new VersionNotFoundException(configId, rollbackToVersion));
 
         String rollbackPayload = rollbackVersionEntity.getPayload();
         Object rollbackPayloadObj = deserializePayload(rollbackPayload);
@@ -414,7 +422,7 @@ public class RolloutService {
 
         String comment = request != null && request.getComment() != null
                 ? request.getComment()
-                : "Rollback from rollout " + rolloutId + " to version " + rollbackToVersion;
+                : "Rollback to version " + rollbackToVersion;
 
         ConfigVersionEntity newVersionEntity = ConfigVersionEntity.builder()
                 .config(config)
@@ -428,7 +436,7 @@ public class RolloutService {
 
         // Вычисляем diff
         String currentPayload = configVersionRepository
-                .findByConfigIdAndVersion(config.getId(), previousVersion)
+                .findByConfigIdAndVersion(configId, previousVersion)
                 .map(ConfigVersionEntity::getPayload)
                 .orElse(null);
         DiffResponse diff = diffService.computeDiff(currentPayload, rollbackPayload, previousVersion, newVersion);
@@ -437,28 +445,43 @@ public class RolloutService {
         // Публикуем в основной канал (всем клиентам)
         String serviceName = config.getService().getName();
         String envCode = config.getEnvironment().getCode();
-        String key = config.getConfigKey();
 
-        // Publish appropriate event
-        publishInstantUpdate(config, serviceName, envCode, key, newVersion, rollbackPayloadObj, rollout.getId());
+        // Determine baseline
+        long baseline = determineBaseline(configId, RolloutType.INSTANT, newVersion);
 
-        // Переводим rollout в rolled_back
-        rollout.markRolledBack();
-        rolloutRepository.save(rollout);
+        // Create instant rollout for the rollback
+        RolloutEntity rollout = RolloutEntity.builder()
+                .config(config)
+                .type(RolloutType.INSTANT)
+                .status(RolloutStatus.COMPLETED)
+                .baselineVersion(baseline)
+                .targetVersion(newVersion)
+                .totalDeployments(1)
+                .currentDeployment(1)
+                .deploymentIntervalSeconds(0)
+                .startedAt(Instant.now())
+                .completedAt(Instant.now())
+                .build();
+        rollout = rolloutRepository.save(rollout);
 
-        // Аудит
+        // Publish to Centrifugo
+        publishInstantUpdate(config, serviceName, envCode, config.getConfigKey(),
+                newVersion, rollbackPayloadObj, rollout.getId());
+
+        // Supersede canary if any
+        markCanarySupersededForConfig(configId, rollout.getId());
+
+        // Audit
         auditService.log(config, "ROLLBACK", previousVersion, newVersion, diffJson, ctx);
 
         Map<String, Object> auditData = new LinkedHashMap<>();
         auditData.put("rolloutId", rollout.getId().toString());
         auditData.put("rollbackToVersion", rollbackToVersion);
         auditData.put("newVersion", newVersion);
-        if (isCanaryCompleted) {
-            auditData.put("canaryRollback", true);
-        }
+        auditData.put("configRollback", true);
 
-        auditService.log(config, "ROLLOUT_ROLLBACK", rollout.getBaselineVersion(),
-                newVersion, serializePayload(auditData), ctx);
+        auditService.log(config, "ROLLOUT_START", baseline, newVersion,
+                serializePayload(auditData), ctx);
 
         return toResponse(rollout);
     }
@@ -470,6 +493,8 @@ public class RolloutService {
     public RolloutResponse deployNext(UUID rolloutId, RequestContext ctx) {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
                 .orElseThrow(() -> new RolloutNotFoundException(rolloutId));
+
+        ensureConfigActive(rollout.getConfig());
 
         if (rollout.getStatus() != RolloutStatus.IN_PROGRESS) {
             throw new RolloutNotActiveException(rolloutId, rollout.getStatus().getValue());
@@ -516,30 +541,6 @@ public class RolloutService {
     }
 
     /**
-     * Возвращает активный rollout entity (если есть) для использования в блокировке
-     */
-    @Transactional(readOnly = true)
-    public RolloutEntity findActiveRolloutEntity(UUID configId) {
-        return rolloutRepository.findActiveByConfigId(configId).orElse(null);
-    }
-
-    /**
-     * Find completed canary rollout for a config (if any)
-     */
-    @Transactional(readOnly = true)
-    public RolloutEntity findCompletedCanaryForConfig(UUID configId) {
-        return rolloutRepository.findCompletedCanaryByConfigId(configId).orElse(null);
-    }
-
-    /**
-     * Find all completed canary rollouts for a service+env
-     */
-    @Transactional(readOnly = true)
-    public List<RolloutEntity> findCompletedCanariesForServiceEnv(String serviceName, String envCode) {
-        return rolloutRepository.findCompletedCanaryByServiceEnv(serviceName, envCode);
-    }
-
-    /**
      * Вызывается scheduler-ом для продвижения всех готовых gradual rollout-ов
      */
     @Transactional
@@ -548,6 +549,15 @@ public class RolloutService {
         for (RolloutEntity rollout : ready) {
             try {
                 ConfigEntity config = rollout.getConfig();
+
+                // Skip if config was deleted
+                if (!config.isActive()) {
+                    log.warn("Skipping deployment for rollout {} — config {} is deleted", rollout.getId(), config.getId());
+                    rollout.markStopped();
+                    rolloutRepository.save(rollout);
+                    continue;
+                }
+
                 String serviceName = config.getService().getName();
                 String envCode = config.getEnvironment().getCode();
                 String key = config.getConfigKey();
@@ -581,6 +591,87 @@ public class RolloutService {
                 log.error("Failed to process deployment for rollout {}", rollout.getId(), e);
             }
         }
+    }
+
+    private ConfigEntity findActiveConfig(UUID configId) {
+        return configRepository.findByIdAndStatus(configId, "active")
+                .orElseThrow(() -> new ConfigNotFoundException(configId));
+    }
+
+    private void ensureConfigActive(ConfigEntity config) {
+        if (!config.isActive()) {
+            throw new ConfigNotFoundException(config.getId());
+        }
+    }
+
+    private RolloutResponse executeRollback(RolloutEntity rollout, ConfigEntity config,
+                                            long rollbackToVersion, String comment,
+                                            RequestContext ctx) {
+        if (rollbackToVersion == 0) {
+            throw new IllegalStateException(
+                    "Cannot rollback: target version is 0 (no previous version exists)");
+        }
+
+        ConfigVersionEntity rollbackVersionEntity = configVersionRepository
+                .findByConfigIdAndVersion(config.getId(), rollbackToVersion)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Version " + rollbackToVersion + " not found for config "
+                                + config.getId()));
+
+        String rollbackPayload = rollbackVersionEntity.getPayload();
+        Object rollbackPayloadObj = deserializePayload(rollbackPayload);
+
+        long previousVersion = config.getCurrentVersion();
+        long newVersion = previousVersion + 1;
+        config.setCurrentVersion(newVersion);
+        configRepository.save(config);
+
+        String rollbackComment = comment != null
+                ? comment
+                : "Rollback from rollout " + rollout.getId() + " to version " + rollbackToVersion;
+
+        ConfigVersionEntity newVersionEntity = ConfigVersionEntity.builder()
+                .config(config)
+                .version(newVersion)
+                .payload(rollbackPayload)
+                .changeType("rollback")
+                .author(ctx.getActor())
+                .comment(rollbackComment)
+                .build();
+        configVersionRepository.save(newVersionEntity);
+
+        String currentPayload = configVersionRepository
+                .findByConfigIdAndVersion(config.getId(), previousVersion)
+                .map(ConfigVersionEntity::getPayload)
+                .orElse(null);
+        DiffResponse diff = diffService.computeDiff(currentPayload, rollbackPayload, previousVersion, newVersion);
+        String diffJson = diffService.serializeDiff(diff);
+
+        String serviceName = config.getService().getName();
+        String envCode = config.getEnvironment().getCode();
+
+        publishInstantUpdate(config, serviceName, envCode, config.getConfigKey(),
+                newVersion, rollbackPayloadObj, rollout.getId());
+
+        rollout.markRolledBack();
+        rolloutRepository.save(rollout);
+
+        auditService.log(config, "ROLLBACK", previousVersion, newVersion, diffJson, ctx);
+
+        Map<String, Object> auditData = new LinkedHashMap<>();
+        auditData.put("rolloutId", rollout.getId().toString());
+        auditData.put("rollbackToVersion", rollbackToVersion);
+        auditData.put("newVersion", newVersion);
+        boolean isCanaryCompleted = rollout.getType() == RolloutType.CANARY
+                && rollout.getStatus() == RolloutStatus.COMPLETED;
+        if (isCanaryCompleted) {
+            auditData.put("canaryRollback", true);
+        }
+
+        auditService.log(config, "ROLLOUT_ROLLBACK", rollout.getBaselineVersion(),
+                newVersion, serializePayload(auditData), ctx);
+
+        return toResponse(rollout);
     }
 
     private void executeNextDeployment(RolloutEntity rollout, ConfigEntity config,
@@ -638,23 +729,6 @@ public class RolloutService {
         data.put("payload", payload);
         data.put("canaryPercentage", percentage);
         data.put("rolloutId", rolloutId.toString());
-        data.put("timestamp", Instant.now().toString());
-
-        publishToCentrifugo(channel, data, idempotencyKey);
-    }
-
-    private void publishConfigDeleted(ConfigEntity config, String serviceName,
-                                      String envCode, String key, UUID rolloutId) {
-        String channel = String.format("service:%s:%s", serviceName, envCode);
-        String idempotencyKey = String.format("delete:%s", config.getId());
-
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("type", "config_deleted");
-        data.put("configId", config.getId().toString());
-        data.put("key", key);
-        if (rolloutId != null) {
-            data.put("rolloutId", rolloutId.toString());
-        }
         data.put("timestamp", Instant.now().toString());
 
         publishToCentrifugo(channel, data, idempotencyKey);
