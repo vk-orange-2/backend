@@ -5,6 +5,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.Date;
 import java.util.UUID;
+import java.util.logging.Logger;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
@@ -112,7 +113,7 @@ public class ApiKeyService {
 
         // Decrypt the stored key and compare
         String decryptedKey = decrypt(apiKey.getValue());
-        if (!apiKeyValue.equals(decryptedKey)) {
+        if (!apiKeyValue.equals(serviceId + ":" + environmentId + ":" + decryptedKey)) {
             return null;
         }
 
@@ -146,7 +147,13 @@ public class ApiKeyService {
 
     /**
      * Generates a subscription JWT token with channel claim.
-     * Used for subscribing to a specific Centrifugo channel.
+     * Used for subscribing to the base Centrifugo channel.
+     * 
+     * @param apiKeyValue   the API key value
+     * @param serviceId     the service ID
+     * @param environmentId the environment ID
+     * @param instanceName  the instance name (can be null)
+     * @return JWT token string, or null if validation fails
      */
     public String getSubscriptionJwt(String apiKeyValue, UUID serviceId, short environmentId, String instanceName) {
         ValidatedApiKey validated = validateApiKey(apiKeyValue, serviceId, environmentId);
@@ -154,22 +161,81 @@ public class ApiKeyService {
             return null;
         }
 
-        String channelName = "service:" + validated.serviceName() + ":" + validated.envCode();
+        // Base channel: service:<service>:<env>
+        String channel = "service:" + validated.serviceName() + ":" + validated.envCode();
+
         SecretKey hmacKey = Keys.hmacShaKeyFor(jwtSigningKey.getBytes());
         var now = new Date();
         String subjectName = instanceName == null ? UUID.randomUUID().toString() : instanceName;
 
         return Jwts.builder()
                 .subject(validated.serviceName() + ":" + validated.envCode() + ":" + subjectName)
-                .claim("channel", channelName)
+                .claim("channel", channel)
                 .issuedAt(now)
                 .expiration(new Date(now.getTime() + JWT_EXPIRATION_MILLISECONDS))
                 .signWith(hmacKey)
                 .compact();
     }
 
+    /**
+     * Generates a subscription JWT token for a gradual rollout channel.
+     * Used for subscribing to gradual rollout channels during staged deployments.
+     * 
+     * The channel is constructed as: service:<service>:<env>:<key>:<percentage>%
+     * 
+     * @param apiKeyValue   the API key value
+     * @param serviceId     the service ID
+     * @param environmentId the environment ID
+     * @param instanceName  the instance name (can be null)
+     * @param configKey     the rollout key identifier (e.g., "feature-x")
+     * @param percentage    the percentage bucket (1-100)
+     * @return JWT token string, or null if validation fails
+     */
+    public String getSubscriptionJwtForGradualChannel(String apiKeyValue, UUID serviceId, short environmentId,
+            String instanceName, String configKey, Integer deployment) {
+        ValidatedApiKey validated = validateApiKey(apiKeyValue, serviceId, environmentId);
+        if (validated == null) {
+            return null;
+        }
+
+        // Validate rollout key
+        if (configKey == null || configKey.isEmpty()) {
+            LOGGER.warning("Rollout key is required for gradual channel subscription");
+            return null;
+        }
+
+        // Validate key format (no colons or percent signs allowed)
+        if (configKey.contains(":") || configKey.contains("%")) {
+            LOGGER.warning("Invalid rollout key '" + configKey + "': must not contain ':' or '%'");
+            return null;
+        }
+
+        if (deployment == null) {
+            return null;
+        }
+
+        // Build gradual rollout channel: service:<service>:<env>:<key>:XX%
+        String channel = "service:" + validated.serviceName() + ":" + validated.envCode() +
+                ":" + configKey + ":" + deployment;
+
+        SecretKey hmacKey = Keys.hmacShaKeyFor(jwtSigningKey.getBytes());
+        var now = new Date();
+        String subjectName = instanceName == null ? UUID.randomUUID().toString() : instanceName;
+
+        return Jwts.builder()
+                .subject(validated.serviceName() + ":" + validated.envCode() + ":" + subjectName)
+                .claim("channel", channel)
+                .issuedAt(now)
+                .expiration(new Date(now.getTime() + JWT_EXPIRATION_MILLISECONDS))
+                .signWith(hmacKey)
+                .compact();
+    }
+
+    private static final Logger LOGGER = Logger.getLogger(ApiKeyService.class.getName());
+
     /** Internal record for validated API key data */
-    private record ValidatedApiKey(String serviceName, String envCode) {}
+    private record ValidatedApiKey(String serviceName, String envCode) {
+    }
 
     public String getApiKey(UUID serviceId, short environmentId) {
         var apiKeyId = new ApiKeyId(serviceId, environmentId);
