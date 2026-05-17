@@ -261,18 +261,20 @@ public class Client {
      * Only processes the update if this instance's bucket matches the deployment number.
      */
     private void handleGradualDeploy(CentrifugoMessage message) {
-        if (message.key == null || message.deployment == null || message.totalDeployments == null) {
+        if (message.key == null || message.version == 0 || message.deployment == null || message.totalDeployments == null) {
             LOGGER.warning("Invalid gradual_deploy message: missing required fields");
             return;
         }
 
         // Check if this instance should process this deployment
-        if (!gradualRolloutManager.shouldProcessGradualDeploy(message.deployment, message.totalDeployments)) {
+        // Uses configKey and version to ensure different instance ordering per deployment
+        if (!gradualRolloutManager.shouldProcessGradualDeploy(
+                message.key, message.version, message.deployment, message.totalDeployments)) {
             return; // Not this instance's turn
         }
 
         LOGGER.info("Processing gradual_deploy for config '" + message.key + 
-                "' deployment " + message.deployment + " of " + message.totalDeployments);
+                "' v" + message.version + " deployment " + message.deployment + " of " + message.totalDeployments);
         
         handleConfigUpdate(message);
     }
