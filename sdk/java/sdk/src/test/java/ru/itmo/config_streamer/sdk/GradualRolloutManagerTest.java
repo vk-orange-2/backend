@@ -192,4 +192,106 @@ class GradualRolloutManagerTest {
         assertTrue(uniqueBuckets.size() > 1, 
                 "Same instance should get different buckets for different versions, got: " + uniqueBuckets.size() + " unique buckets");
     }
+
+    // ==================== Canary Tests ====================
+
+    @Test
+    @DisplayName("isInCanary returns consistent results for same instance")
+    void testIsInCanaryConsistent() {
+        GradualRolloutManager manager = new GradualRolloutManager("test-instance-1");
+        
+        // Same instance should always get same canary membership for same percentage
+        boolean result1 = manager.isInCanary(50);
+        boolean result2 = manager.isInCanary(50);
+        boolean result3 = manager.isInCanary(50);
+        
+        assertEquals(result1, result2, "Same instance should get consistent canary membership");
+        assertEquals(result1, result3, "Same instance should get consistent canary membership");
+    }
+
+    @Test
+    @DisplayName("isInCanary distributes instances correctly")
+    void testIsInCanaryDistribution() {
+        int percentage = 20;
+        int inCanaryCount = 0;
+        int totalInstances = 1000;
+        
+        for (int i = 0; i < totalInstances; i++) {
+            GradualRolloutManager manager = new GradualRolloutManager("instance-" + i);
+            if (manager.isInCanary(percentage)) {
+                inCanaryCount++;
+            }
+        }
+        
+        // Approximately 20% of instances should be in canary
+        // Allow for variance: 15% to 25%
+        assertTrue(inCanaryCount >= 150 && inCanaryCount <= 250,
+                "Expected ~200 instances in canary (20%), got: " + inCanaryCount);
+    }
+
+    @Test
+    @DisplayName("isInCanary with 0 percentage returns false")
+    void testIsInCanaryZeroPercentage() {
+        GradualRolloutManager manager = new GradualRolloutManager("any-instance");
+        assertFalse(manager.isInCanary(0), "No instances should be in canary with 0% percentage");
+    }
+
+    @Test
+    @DisplayName("isInCanary with 100 percentage returns true")
+    void testIsInCanaryHundredPercentage() {
+        GradualRolloutManager manager = new GradualRolloutManager("any-instance");
+        assertTrue(manager.isInCanary(100), "All instances should be in canary with 100% percentage");
+    }
+
+    @Test
+    @DisplayName("Instance hash is between 0 and 99")
+    void testInstanceHashRange() {
+        for (int i = 0; i < 100; i++) {
+            GradualRolloutManager manager = new GradualRolloutManager("instance-" + i);
+            int hash = manager.getInstanceHash();
+            assertTrue(hash >= 0 && hash < 100, 
+                    "Instance hash should be 0-99, got: " + hash);
+        }
+    }
+
+    @Test
+    @DisplayName("isInCanary uses only instance name hash, not config key or version")
+    void testIsInCanaryIndependentOfConfig() {
+        GradualRolloutManager manager = new GradualRolloutManager("test-instance");
+        
+        // isInCanary should return same result regardless of config/gradual calculations
+        int percentage = 30;
+        boolean canaryResult = manager.isInCanary(percentage);
+        
+        // Do some gradual calculations (should not affect canary)
+        manager.calculateDeploymentBucket("config-a", 1, 4);
+        manager.calculateDeploymentBucket("config-b", 2, 10);
+        
+        // Canary should still be same
+        assertEquals(canaryResult, manager.isInCanary(percentage),
+                "Canary membership should not be affected by gradual calculations");
+    }
+
+    @Test
+    @DisplayName("Different instances have different canary membership at 50%")
+    void testDifferentInstancesCanaryDistribution() {
+        int percentage = 50;
+        java.util.List<Boolean> results = new java.util.ArrayList<>();
+        
+        for (int i = 0; i < 10; i++) {
+            GradualRolloutManager manager = new GradualRolloutManager("instance-" + i);
+            results.add(manager.isInCanary(percentage));
+        }
+        
+        // At 50%, we should have some true and some false
+        long trueCount = results.stream().filter(b -> b).count();
+        long falseCount = results.stream().filter(b -> !b).count();
+        
+        // With 10 instances at 50%, we should have roughly half in canary
+        // Allow 2-8 range for variance
+        assertTrue(trueCount >= 2 && trueCount <= 8,
+                "Expected ~5 instances in canary at 50%, got: " + trueCount);
+        assertTrue(falseCount >= 2 && falseCount <= 8,
+                "Expected ~5 instances NOT in canary at 50%, got: " + falseCount);
+    }
 }
