@@ -2,6 +2,7 @@ package ru.configplatform.configserver.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -9,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.*;
 import ru.configplatform.configserver.exception.*;
+import ru.configplatform.configserver.metrics.DeliveryMetrics;
 import ru.configplatform.configserver.model.*;
 import ru.configplatform.configserver.repository.CentrifugoOutboxRepository;
 import ru.configplatform.configserver.repository.ConfigRepository;
@@ -17,7 +19,11 @@ import ru.configplatform.configserver.repository.RolloutRepository;
 import ru.configplatform.configserver.service.lock.DistributedLockService;
 
 import java.time.Instant;
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -32,6 +38,7 @@ public class RolloutService {
     private final AuditService auditService;
     private final DiffService diffService;
     private final ObjectMapper objectMapper;
+    private final DeliveryMetrics deliveryMetrics;
 
     /**
      * Создать и запустить rollout.
@@ -747,11 +754,17 @@ public class RolloutService {
                 .idempotencyKey(idempotencyKey)
                 .build();
 
+        Timer.Sample sample = deliveryMetrics.startEnqueueTimer();
         try {
             centrifugoOutboxRepository.save(outbox);
+            deliveryMetrics.markEnqueueSuccess(sample);
         } catch (DataIntegrityViolationException e) {
             // Идемпотентность: запись с таким ключом уже существует
+            deliveryMetrics.markDuplicate(sample);
             log.debug("Duplicate outbox entry for key: {}", idempotencyKey);
+        } catch (RuntimeException e) {
+            deliveryMetrics.markFailure(sample);
+            throw e;
         }
     }
 
