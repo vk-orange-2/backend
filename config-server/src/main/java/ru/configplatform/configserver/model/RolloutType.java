@@ -4,7 +4,8 @@ import com.fasterxml.jackson.annotation.JsonValue;
 
 public enum RolloutType {
     INSTANT("instant"),
-    GRADUAL("gradual");
+    GRADUAL("gradual"),
+    CANARY("canary");
 
     private final String value;
 
@@ -24,6 +25,6 @@ public enum RolloutType {
             }
         }
         throw new IllegalArgumentException(
-                "Invalid rollout type: " + value + ". Valid values: instant, gradual");
+                "Invalid rollout type: " + value + ". Valid values: instant, gradual, canary");
     }
 }

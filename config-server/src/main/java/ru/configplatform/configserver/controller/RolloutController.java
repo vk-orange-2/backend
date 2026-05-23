@@ -1,6 +1,7 @@
 package ru.configplatform.configserver.controller;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -9,16 +10,8 @@ import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-import ru.configplatform.configserver.dto.CreateRolloutRequest;
-import ru.configplatform.configserver.dto.RequestContext;
-import ru.configplatform.configserver.dto.RolloutResponse;
+import org.springframework.web.bind.annotation.*;
+import ru.configplatform.configserver.dto.*;
 import ru.configplatform.configserver.service.RolloutService;
 
 import java.util.List;
@@ -68,7 +61,7 @@ public class RolloutController {
 
     @Operation(
             summary = "Stop rollout",
-            description = "Stops further deployment propagation. "
+            description = "Stops further gradual deployment propagation. "
                     + "Clients that already received the update keep it. "
                     + "Global config version is NOT changed."
     )
@@ -83,18 +76,35 @@ public class RolloutController {
     }
 
     @Operation(
-            summary = "Rollback rollout",
-            description = "Rolls back the config to the baseline version of this rollout. "
-                    + "Creates a new config version and publishes it to ALL clients immediately."
+            summary = "Rollback a rollout",
+            description = "Rolls back to the baseline version. For canary rollouts, "
+                    + "optionally specify a targetVersion to rollback to a specific version "
+                    + "instead of the default baseline."
     )
-    @ApiResponse(responseCode = "409", description = "Rollout is not active")
     @PostMapping("/{id}/rollback")
     public ResponseEntity<RolloutResponse> rollback(
             @PathVariable UUID id,
+            @RequestBody(required = false) RollbackRolloutRequest request,
             HttpServletRequest httpRequest
     ) {
         RequestContext ctx = extractContext(httpRequest);
-        return ResponseEntity.ok(rolloutService.rollback(id, ctx));
+        return ResponseEntity.ok(rolloutService.rollback(id, request, ctx));
+    }
+
+    @Operation(
+            summary = "Rollback a config to a specific version",
+            description = "Creates an instant rollout that deploys the specified version "
+                    + "to all instances. Use this when you want to rollback a config "
+                    + "without referencing a specific rollout."
+    )
+    @PostMapping("/config/{configId}/rollback")
+    public ResponseEntity<RolloutResponse> rollbackConfig(
+            @PathVariable UUID configId,
+            @Valid @RequestBody RollbackRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        RequestContext ctx = extractContext(httpRequest);
+        return ResponseEntity.ok(rolloutService.rollbackConfig(configId, request, ctx));
     }
 
     @Operation(summary = "Deploy next batch (for gradual rollout)",

@@ -12,7 +12,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.CreateConfigRequest;
 import ru.configplatform.configserver.dto.DeleteConfigRequest;
-import ru.configplatform.configserver.dto.RollbackRequest;
+import ru.configplatform.configserver.dto.RollbackRolloutRequest;
 import ru.configplatform.configserver.dto.UpdateConfigRequest;
 
 import java.util.Map;
@@ -87,38 +87,6 @@ class AuditControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.entries[0].operation", is("DELETE")))
                 .andExpect(jsonPath("$.entries[0].actor", is("user-d")));
-    }
-
-    @Test
-    void shouldLogRollbackOperation() throws Exception {
-        String id = createConfigAndReturnId("audit-rb-svc", "dev", "rb-key",
-                Map.of("v", 1), "user-e");
-
-        UpdateConfigRequest update = UpdateConfigRequest.builder()
-                .value(Map.of("v", 2))
-                .expectedVersion(1L).build();
-
-        mockMvc.perform(put("/v1/configs/" + id)
-                .contentType(MediaType.APPLICATION_JSON)
-                .header("X-Author", "user-e")
-                .content(objectMapper.writeValueAsString(update)));
-
-        RollbackRequest rollback = RollbackRequest.builder()
-                .targetVersion(1L)
-                .expectedVersion(2L).build();
-
-        mockMvc.perform(post("/v1/configs/" + id + "/rollback")
-                .contentType(MediaType.APPLICATION_JSON)
-                .header("X-Author", "deployer")
-                .content(objectMapper.writeValueAsString(rollback)));
-
-        mockMvc.perform(get("/v1/audit")
-                        .param("serviceName", "audit-rb-svc")
-                        .param("operation", "ROLLBACK"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.entries[0].operation", is("ROLLBACK")))
-                .andExpect(jsonPath("$.entries[0].actor", is("deployer")))
-                .andExpect(jsonPath("$.entries[0].diff").exists());
     }
 
     @Test

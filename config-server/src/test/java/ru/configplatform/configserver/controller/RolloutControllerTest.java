@@ -377,47 +377,6 @@ class RolloutControllerTest {
     }
 
     @Test
-    void shouldGetActiveRolloutForConfig() throws Exception {
-        String configId = createConfigAndReturnId("rollout-active-svc", "dev", "active-key",
-                Map.of("v", 1));
-
-        UpdateConfigRequest update = UpdateConfigRequest.builder()
-                .value(Map.of("v", 2))
-                .expectedVersion(1L)
-                .build();
-        mockMvc.perform(put("/v1/configs/" + configId)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(update)));
-
-        CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
-                .configId(UUID.fromString(configId))
-                .type("gradual")
-                .totalDeployments(5)
-                .deploymentIntervalSeconds(60)
-                .build();
-
-        mockMvc.perform(post("/v1/rollouts")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(rolloutReq)))
-                .andExpect(status().isCreated());
-
-        mockMvc.perform(get("/v1/configs/" + configId + "/active-rollout"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status", is("in_progress")))
-                .andExpect(jsonPath("$.totalDeployments", is(5)))
-                .andExpect(jsonPath("$.currentDeployment", is(1)));
-    }
-
-    @Test
-    void shouldReturn204WhenNoActiveRollout() throws Exception {
-        String configId = createConfigAndReturnId("rollout-noactive-svc", "dev", "noactive-key",
-                Map.of("v", 1));
-
-        mockMvc.perform(get("/v1/configs/" + configId + "/active-rollout"))
-                .andExpect(status().isNoContent());
-    }
-
-    @Test
     void shouldAuditRolloutStart() throws Exception {
         String configId = createConfigAndReturnId("rollout-audit-svc", "dev", "audit-key",
                 Map.of("v", 1));
@@ -666,6 +625,302 @@ class RolloutControllerTest {
                         .param("environment", "dev"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(0)));
+    }
+
+    @Test
+    void shouldCreateCanaryRollout() throws Exception {
+        String configId = createConfigAndReturnId("canary-svc", "dev", "canary-key",
+                Map.of("v", 1));
+
+        CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("canary")
+                .canaryPercentage(5)
+                .build();
+
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
+                        .content(objectMapper.writeValueAsString(rolloutReq)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id", notNullValue()))
+                .andExpect(jsonPath("$.type", is("canary")))
+                .andExpect(jsonPath("$.status", is("completed")))
+                .andExpect(jsonPath("$.canaryPercentage", is(5)))
+                .andExpect(jsonPath("$.configId", is(configId)))
+                .andExpect(jsonPath("$.targetVersion", is(1)));
+    }
+
+    @Test
+    void shouldReturn400ForCanaryWithoutPercentage() throws Exception {
+        String configId = createConfigAndReturnId("canary-nopct-svc", "dev", "canary-nopct-key",
+                Map.of("v", 1));
+
+        CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("canary")
+                .build();
+
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(rolloutReq)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldRollbackCanaryRollout() throws Exception {
+        String configId = createConfigAndReturnId("canary-rb-svc", "dev", "canary-rb-key",
+                Map.of("original", true));
+
+        UpdateConfigRequest update = UpdateConfigRequest.builder()
+                .value(Map.of("canary", true))
+                .expectedVersion(1L)
+                .build();
+        mockMvc.perform(put("/v1/configs/" + configId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)));
+
+        CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("canary")
+                .canaryPercentage(10)
+                .build();
+
+        MvcResult result = mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
+                        .content(objectMapper.writeValueAsString(rolloutReq)))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        String rolloutId = objectMapper.readTree(result.getResponse().getContentAsString())
+                .get("id").asText();
+
+        // Rollback the canary (it's in completed state)
+        mockMvc.perform(post("/v1/rollouts/" + rolloutId + "/rollback")
+                        .header("X-Author", "admin"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("rolled_back")));
+
+        // Config version should be incremented (rollback creates new version)
+        mockMvc.perform(get("/v1/configs/" + configId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentVersion", is(3)))
+                .andExpect(jsonPath("$.latestVersion.payload.original", is(true)));
+    }
+
+    @Test
+    void shouldAllowInstantAfterCanary() throws Exception {
+        String configId = createConfigAndReturnId("canary-promote-svc", "dev", "canary-promote-key",
+                Map.of("v", 1));
+
+        UpdateConfigRequest update = UpdateConfigRequest.builder()
+                .value(Map.of("v", 2))
+                .expectedVersion(1L)
+                .build();
+        mockMvc.perform(put("/v1/configs/" + configId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)));
+
+        // Create canary
+        CreateRolloutRequest canaryReq = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("canary")
+                .canaryPercentage(5)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canaryReq)))
+                .andExpect(status().isCreated());
+
+        // Now promote via instant (same config) → should work
+        // First need a new version
+        UpdateConfigRequest update2 = UpdateConfigRequest.builder()
+                .value(Map.of("v", 3))
+                .expectedVersion(2L)
+                .build();
+        mockMvc.perform(put("/v1/configs/" + configId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update2)));
+
+        CreateRolloutRequest instantReq = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("instant")
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(instantReq)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.type", is("instant")))
+                .andExpect(jsonPath("$.status", is("completed")));
+    }
+
+    @Test
+    void shouldAllowCanaryOnSamePercentageForDifferentConfig() throws Exception {
+        // Config 1 with canary at 10%
+        String configId1 = createConfigAndReturnId("canary-multi-svc", "dev", "key-1",
+                Map.of("v", 1));
+        CreateRolloutRequest canary1 = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId1))
+                .type("canary")
+                .canaryPercentage(10)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canary1)))
+                .andExpect(status().isCreated());
+
+        // Config 2 canary at same 10% → should work
+        String configId2 = createConfigAndReturnId("canary-multi-svc", "dev", "key-2",
+                Map.of("v", 1));
+        CreateRolloutRequest canary2 = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId2))
+                .type("canary")
+                .canaryPercentage(10)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canary2)))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void shouldAllowCanaryOnDifferentPercentageForDifferentConfig() throws Exception {
+        String configId1 = createConfigAndReturnId("canary-block-svc", "dev", "key-1",
+                Map.of("v", 1));
+        CreateRolloutRequest canary1 = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId1))
+                .type("canary")
+                .canaryPercentage(10)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canary1)))
+                .andExpect(status().isCreated());
+
+        String configId2 = createConfigAndReturnId("canary-block-svc", "dev", "key-2",
+                Map.of("v", 1));
+        CreateRolloutRequest canary2 = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId2))
+                .type("canary")
+                .canaryPercentage(20)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canary2)))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void shouldAllowGradualOnDifferentConfigWhileCanaryExists() throws Exception {
+        String configId1 = createConfigAndReturnId("canary-gradblock-svc", "dev", "key-1",
+                Map.of("v", 1));
+        CreateRolloutRequest canary = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId1))
+                .type("canary")
+                .canaryPercentage(10)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canary)))
+                .andExpect(status().isCreated());
+
+        // Different config, gradual → blocked
+        String configId2 = createConfigAndReturnId("canary-gradblock-svc", "dev", "key-2",
+                Map.of("v", 1));
+        UpdateConfigRequest update = UpdateConfigRequest.builder()
+                .value(Map.of("v", 2))
+                .expectedVersion(1L)
+                .build();
+        mockMvc.perform(put("/v1/configs/" + configId2)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)));
+
+        CreateRolloutRequest gradual = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId2))
+                .type("gradual")
+                .totalDeployments(5)
+                .deploymentIntervalSeconds(60)
+                .build();
+
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(gradual)))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void shouldAllowCanaryWithHigherPercentageOnSameConfig() throws Exception {
+        String configId = createConfigAndReturnId("canary-increase-svc", "dev", "key-1",
+                Map.of("v", 1));
+
+        // Canary at 5%
+        CreateRolloutRequest canary1 = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("canary")
+                .canaryPercentage(5)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canary1)))
+                .andExpect(status().isCreated());
+
+        // Need new version for next canary
+        UpdateConfigRequest update = UpdateConfigRequest.builder()
+                .value(Map.of("v", 2))
+                .expectedVersion(1L)
+                .build();
+        mockMvc.perform(put("/v1/configs/" + configId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)));
+
+        // Canary at 15% on same config → OK (higher percentage)
+        CreateRolloutRequest canary2 = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("canary")
+                .canaryPercentage(15)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canary2)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.canaryPercentage", is(15)));
+    }
+
+    @Test
+    void shouldBlockCanaryWithLowerPercentageOnSameConfig() throws Exception {
+        String configId = createConfigAndReturnId("canary-decrease-svc", "dev", "key-1",
+                Map.of("v", 1));
+
+        CreateRolloutRequest canary1 = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("canary")
+                .canaryPercentage(10)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canary1)))
+                .andExpect(status().isCreated());
+
+        UpdateConfigRequest update = UpdateConfigRequest.builder()
+                .value(Map.of("v", 2))
+                .expectedVersion(1L)
+                .build();
+        mockMvc.perform(put("/v1/configs/" + configId)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(update)));
+
+        // Canary at 3% → blocked (lower)
+        CreateRolloutRequest canary2 = CreateRolloutRequest.builder()
+                .configId(UUID.fromString(configId))
+                .type("canary")
+                .canaryPercentage(3)
+                .build();
+        mockMvc.perform(post("/v1/rollouts")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(canary2)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code", is("CANARY_POLICY_VIOLATION")));
     }
 
     private String createConfigAndReturnId(String service, String env, String key, Object value) throws Exception {

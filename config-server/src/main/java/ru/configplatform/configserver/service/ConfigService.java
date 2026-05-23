@@ -3,36 +3,32 @@ package ru.configplatform.configserver.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.*;
 import ru.configplatform.configserver.exception.*;
-import ru.configplatform.configserver.model.CentrifugoOutboxEntity;
-import ru.configplatform.configserver.model.ConfigEntity;
-import ru.configplatform.configserver.model.ConfigVersionEntity;
-import ru.configplatform.configserver.model.EnvironmentEntity;
-import ru.configplatform.configserver.model.ServiceEntity;
-import ru.configplatform.configserver.repository.ConfigRepository;
-import ru.configplatform.configserver.repository.ConfigVersionRepository;
-import ru.configplatform.configserver.repository.EnvironmentRepository;
-import ru.configplatform.configserver.repository.RolloutRepository;
-import ru.configplatform.configserver.repository.ServiceRepository;
+import ru.configplatform.configserver.model.*;
+import ru.configplatform.configserver.repository.*;
 import ru.configplatform.configserver.validation.PayloadValidator;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ConfigService {
 
     private final ServiceRepository serviceRepository;
     private final EnvironmentRepository environmentRepository;
     private final ConfigRepository configRepository;
     private final ConfigVersionRepository configVersionRepository;
+    private final CentrifugoOutboxRepository centrifugoOutboxRepository;
     private final RolloutRepository rolloutRepository;
     private final PayloadValidator payloadValidator;
     private final DiffService diffService;
@@ -41,18 +37,6 @@ public class ConfigService {
 
     /**
      * Создает новый конфиг или обновляет существующий (upsert по service+env+key)
-     *
-     * В одной транзакции:
-     * 1. Находит или создает сервис по имени
-     * 2. Находит окружение по коду
-     * 3. Находит или создает конфиг по (service, env, key)
-     * 4. Инкрементирует версию
-     * 5. Создает запись в config_versions (иммутабельная история)
-     * 6. Пишет в centrifugo_outbox → триггер делает pg_notify → Centrifugo пушит клиентам
-     *
-     * ВАЖНО: Публикация в Centrifugo НЕ происходит здесь.
-     * Доставка клиентам выполняется через Rollout API.
-     * Это позволяет разделить "сохранение новой версии" и "доставку клиентам".
      */
     @Transactional
     public ConfigResponse createOrUpdate(CreateConfigRequest request, RequestContext ctx) {
@@ -92,6 +76,7 @@ public class ConfigService {
             checkNoActiveRollout(config.getId());
         }
 
+        // Re-activate if deleted
         if (!config.isActive()) {
             config.setStatus("active");
             config.setDeletedAt(null);
@@ -133,7 +118,6 @@ public class ConfigService {
     public ConfigResponse getById(UUID id) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
                 .orElseThrow(() -> new ConfigNotFoundException(id));
-
         Object payload = loadLatestPayload(config);
         return toResponse(config, payload);
     }
@@ -144,7 +128,6 @@ public class ConfigService {
     @Transactional(readOnly = true)
     public ConfigListResponse getConfigs(String serviceName, String envCode) {
         ServiceEntity service = serviceRepository.findByName(serviceName).orElse(null);
-
         if (service == null) {
             return ConfigListResponse.builder()
                     .configs(List.of())
@@ -178,9 +161,8 @@ public class ConfigService {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
                 .orElseThrow(() -> new ConfigNotFoundException(id));
 
+        ensureActive(config);
         checkVersion(request.getExpectedVersion(), config.getCurrentVersion());
-
-        // Блокировка при активном rollout
         checkNoActiveRollout(config.getId());
 
         payloadValidator.validate(request.getValue(), "json");
@@ -217,15 +199,30 @@ public class ConfigService {
 
         checkVersion(expectedVersion, config.getCurrentVersion());
 
-        config.markDeleted();
+        // Cancel any active rollouts for this config
+        rolloutRepository.findActiveByConfigId(config.getId()).ifPresent(rollout -> {
+            rollout.markStopped();
+            rolloutRepository.save(rollout);
+        });
 
+        // Mark completed canary as rolled back
+        rolloutRepository.findCompletedCanaryByConfigId(config.getId()).ifPresent(canary -> {
+            canary.markRolledBack();
+            rolloutRepository.save(canary);
+        });
+
+        config.markDeleted();
         long previousVersion = config.getCurrentVersion();
         long newVersion = previousVersion + 1;
-
         config.setCurrentVersion(newVersion);
         configRepository.save(config);
 
         createVersionRecord(config, newVersion, serializePayload(null), "delete", ctx.getActor(), null);
+
+        // Publish deletion event to Centrifugo so SDK removes config
+        String serviceName = config.getService().getName();
+        String envCode = config.getEnvironment().getCode();
+        publishConfigDeleted(config, serviceName, envCode, config.getConfigKey());
 
         auditService.log(config, "DELETE", previousVersion, newVersion, null, ctx);
     }
@@ -237,6 +234,7 @@ public class ConfigService {
     public VersionHistoryResponse getVersionHistory(UUID configId) {
         ConfigEntity config = configRepository.findById(configId)
                 .orElseThrow(() -> new ConfigNotFoundException(configId));
+        ensureActive(config);
 
         List<VersionResponse> versions = configVersionRepository
                 .findByConfigIdOrderByVersionDesc(configId)
@@ -252,8 +250,9 @@ public class ConfigService {
      */
     @Transactional(readOnly = true)
     public VersionResponse getVersion(UUID configId, long version) {
-        configRepository.findById(configId)
+        ConfigEntity config = configRepository.findById(configId)
                 .orElseThrow(() -> new ConfigNotFoundException(configId));
+        ensureActive(config);
 
         ConfigVersionEntity versionEntity = configVersionRepository
                 .findByConfigIdAndVersion(configId, version)
@@ -267,56 +266,14 @@ public class ConfigService {
      */
     @Transactional(readOnly = true)
     public DiffResponse getDiff(UUID configId, long versionFrom, long versionTo) {
-        configRepository.findById(configId)
+        ConfigEntity config = configRepository.findById(configId)
                 .orElseThrow(() -> new ConfigNotFoundException(configId));
+        ensureActive(config);
 
         String payloadFrom = getPayloadForVersion(configId, versionFrom);
         String payloadTo = getPayloadForVersion(configId, versionTo);
 
         return diffService.computeDiff(payloadFrom, payloadTo, versionFrom, versionTo);
-    }
-
-    /**
-     * Откатывает конфигурацию к указанной версии.
-     *
-     * Это "ручной" rollback конфига (не через rollout). Создаёт новую версию,
-     * но НЕ публикует в Centrifugo. Для доставки нужен rollout.
-     */
-    @Transactional
-    public ConfigResponse rollback(UUID configId, RollbackRequest request, RequestContext ctx) {
-        ConfigEntity config = configRepository.findByIdAndStatus(configId, "active")
-                .orElseThrow(() -> new ConfigNotFoundException(configId));
-
-        checkVersion(request.getExpectedVersion(), config.getCurrentVersion());
-
-        ConfigVersionEntity targetVersion = configVersionRepository
-                .findByConfigIdAndVersion(configId, request.getTargetVersion())
-                .orElseThrow(() -> new VersionNotFoundException(configId,
-                        request.getTargetVersion()));
-
-        String targetPayload = targetVersion.getPayload();
-
-        long previousVersion = config.getCurrentVersion();
-        long newVersion = previousVersion + 1;
-
-        config.setCurrentVersion(newVersion);
-        config = configRepository.save(config);
-
-        String comment = request.getComment() != null
-                ? request.getComment()
-                : "Rollback to version " + request.getTargetVersion();
-
-        createVersionRecord(config, newVersion, targetPayload, "rollback", ctx.getActor(), comment);
-
-        String currentPayload = getPayloadForVersion(configId, previousVersion);
-        DiffResponse diff = diffService.computeDiff(currentPayload, targetPayload, previousVersion, newVersion);
-        String diffJson = diffService.serializeDiff(diff);
-
-        auditService.log(config, "ROLLBACK", previousVersion, newVersion, diffJson, ctx);
-
-        Object payloadObj = deserializePayload(targetPayload);
-
-        return toResponse(config, payloadObj);
     }
 
     /**
@@ -357,6 +314,12 @@ public class ConfigService {
                 .description(service.getDescription())
                 .createdAt(service.getCreatedAt())
                 .build();
+    }
+
+    private void ensureActive(ConfigEntity config) {
+        if (!config.isActive()) {
+            throw new ConfigNotFoundException(config.getId());
+        }
     }
 
     private void checkVersion(long expectedVersion, long actualVersion) {
@@ -406,6 +369,37 @@ public class ConfigService {
                 .findByConfigIdAndVersion(config.getId(), config.getCurrentVersion())
                 .map(v -> deserializePayload(v.getPayload()))
                 .orElse(null);
+    }
+
+    private void publishConfigDeleted(ConfigEntity config, String serviceName,
+                                      String envCode, String key) {
+        String channel = String.format("service:%s:%s", serviceName, envCode);
+        String idempotencyKey = String.format("delete:%s:v%d",
+                config.getId(), config.getCurrentVersion());
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("type", "config_deleted");
+        data.put("configId", config.getId().toString());
+        data.put("key", key);
+        data.put("timestamp", Instant.now().toString());
+
+        Map<String, Object> centrifugoPayload = Map.of(
+                "channel", channel,
+                "data", data
+        );
+
+        CentrifugoOutboxEntity outbox = CentrifugoOutboxEntity.builder()
+                .method("publish")
+                .payload(serializePayload(centrifugoPayload))
+                .partition(0)
+                .idempotencyKey(idempotencyKey)
+                .build();
+
+        try {
+            centrifugoOutboxRepository.save(outbox);
+        } catch (DataIntegrityViolationException e) {
+            log.debug("Duplicate outbox entry for delete key: {}", idempotencyKey);
+        }
     }
 
     private VersionResponse toVersionResponse(ConfigVersionEntity entity) {

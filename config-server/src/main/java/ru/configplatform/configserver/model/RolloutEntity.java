@@ -64,6 +64,9 @@ public class RolloutEntity {
     @Builder.Default
     private Integer deploymentIntervalSeconds = 0;
 
+    @Column(name = "canary_percentage")
+    private Integer canaryPercentage;
+
     @Column(name = "next_deployment_at")
     private Instant nextDeploymentAt;
 
@@ -89,6 +92,10 @@ public class RolloutEntity {
 
     public boolean isActive() {
         return status.isActive();
+    }
+
+    public boolean isCanary() {
+        return type == RolloutType.CANARY;
     }
 
     public void markInProgress() {

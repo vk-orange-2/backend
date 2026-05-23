@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS rollouts (
     id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     config_id                   UUID NOT NULL REFERENCES configs(id),
-    type                        TEXT NOT NULL CHECK (type IN ('instant', 'gradual')),
+    type                        TEXT NOT NULL CHECK (type IN ('instant', 'gradual', 'canary')),
     status                      TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'in_progress', 'completed', 'stopped', 'rolled_back')),
     baseline_version            BIGINT NOT NULL,
