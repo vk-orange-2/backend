@@ -42,5 +42,14 @@ application {
     mainClass.set("ru.itmo.config_streamer.loadtests.ConfigServerLoadTest")
 }
 
+// Pass system properties to the application
+tasks.named<JavaExec>("run") {
+    System.getProperties().forEach { key, value ->
+        if (key is String && (key.startsWith("config.") || key.startsWith("test."))) {
+            systemProperty(key, value)
+        }
+    }
+}
+
 group = "ru.itmo.config_streamer"
 version = "0.0.1-SNAPSHOT"
