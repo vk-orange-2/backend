@@ -5,6 +5,15 @@ spring:
 server:
   port: 8090
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    prometheus:
+      enabled: true
+
 config-streamer:
   base-url: http://localhost:8080
   api-key: "${SDK_TEST_API_KEY}"

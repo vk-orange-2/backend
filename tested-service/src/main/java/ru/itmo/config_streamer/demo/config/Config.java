@@ -4,7 +4,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import ru.itmo.config_streamer.sdk.Client;
+import ru.itmo.config_streamer.sdk.ClientOptions;
 
 @Configuration
 public class Config {
@@ -15,8 +17,9 @@ public class Config {
     private String apiKey;
 
     @Bean
-    Client configStreamerClient() {
-        var client = new Client(baseUrl, apiKey);
+    Client configStreamerClient(MeterRegistry meterRegistry) {
+        var client = new Client(baseUrl, apiKey, 
+                ClientOptions.builder().meterRegistry(meterRegistry).build());
         client.run();
         return client;
     }

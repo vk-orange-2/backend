@@ -28,4 +28,6 @@ public class CentrifugoMessage {
     
     // Timestamp
     public String timestamp;
+
+    public Integer deployments;
 }

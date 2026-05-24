@@ -14,6 +14,9 @@ dependencies {
 
     implementation("io.github.centrifugal:centrifuge-java:0.5.0")
     implementation("com.fasterxml.jackson.core:jackson-databind:2.17.0")
+    
+    // Micrometer for metrics (integrates with Spring Boot Actuator)
+    implementation("io.micrometer:micrometer-core:1.15.0")
 }
 
 java {
