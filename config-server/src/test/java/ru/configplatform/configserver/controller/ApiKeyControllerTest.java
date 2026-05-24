@@ -74,19 +74,19 @@ class ApiKeyControllerTest {
 
     @Test
     void shouldReturnExistingApiKey() throws Exception {
-        // First create an API key
+        // First create an API key (returns full format: serviceId:envId:key)
         String apiKey = mockMvc.perform(put("/v1/api-keys")
                 .param("serviceId", testServiceId.toString())
                 .param("environmentId", String.valueOf(DEV_ENV_ID)))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
-        // Then retrieve it
+        // Then retrieve it - should return the same full format
         mockMvc.perform(get("/v1/api-keys")
                 .param("serviceId", testServiceId.toString())
                 .param("environmentId", String.valueOf(DEV_ENV_ID)))
                 .andExpect(status().isOk())
-                .andExpect(content().string(testServiceId.toString() + ":" + DEV_ENV_ID + ":" + apiKey));
+                .andExpect(content().string(apiKey));
     }
 
     @Test
@@ -101,22 +101,22 @@ class ApiKeyControllerTest {
 
     @Test
     void shouldResetApiKey() throws Exception {
-        // Create initial API key
+        // Create initial API key (full format: serviceId:envId:key)
         String firstKey = mockMvc.perform(put("/v1/api-keys")
                 .param("serviceId", testServiceId.toString())
                 .param("environmentId", String.valueOf(DEV_ENV_ID)))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
-        // Reset (should return a new key)
+        // Reset (should return a new key in full format)
         String secondKey = mockMvc.perform(put("/v1/api-keys")
                 .param("serviceId", testServiceId.toString())
                 .param("environmentId", String.valueOf(DEV_ENV_ID)))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
-        // Keys should be different
-        assertThat(firstKey, not(equalTo(testServiceId.toString() + ":" + DEV_ENV_ID + ":" + secondKey)));
+        // Keys should be different (both in full format but with different key values)
+        assertThat(firstKey, not(equalTo(secondKey)));
     }
 
     @Test

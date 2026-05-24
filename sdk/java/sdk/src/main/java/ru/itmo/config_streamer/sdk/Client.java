@@ -23,14 +23,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.github.centrifugal.centrifuge.PublicationEvent;
 import ru.itmo.config_streamer.sdk.dto.CentrifugoMessage;
-import ru.itmo.config_streamer.sdk.dto.ConfigItem;
-import ru.itmo.config_streamer.sdk.dto.ConfigListResponse;
-import ru.itmo.config_streamer.sdk.dto.RolloutResponse;
-import ru.itmo.config_streamer.sdk.dto.VersionInfo;
+import ru.itmo.config_streamer.sdk.dto.ConfigStateResponse;
+import ru.itmo.config_streamer.sdk.dto.ConfigStateResponse.ConfigStateEntry;
+import ru.itmo.config_streamer.sdk.dto.ConfigStateResponse.GradualRolloutState;
+import ru.itmo.config_streamer.sdk.dto.ConfigStateResponse.CanaryState;
 
 /**
  * Main client for receiving configuration updates via Centrifugo WebSocket.
- * Supports gradual rollout functionality for staged configuration deployments.
+ * Supports gradual rollout and canary deployment functionality for staged configuration deployments.
  */
 public class Client {
     private static final Logger LOGGER = Logger.getLogger(Client.class.getName());
@@ -89,9 +89,8 @@ public class Client {
             throw new RuntimeException("Failed to extract channel info from JWT");
         }
 
-        this.gradualRolloutManager = new GradualRolloutManager(baseChannel, instanceName);
-        this.centrifugoManager = new CentrifugoManager(baseUrl, baseChannel, tokenFetcher,
-                gradualRolloutManager, this::handlePublication);
+        this.gradualRolloutManager = new GradualRolloutManager(instanceName);
+        this.centrifugoManager = new CentrifugoManager(baseUrl, baseChannel, tokenFetcher, this::handlePublication);
     }
 
     /**
@@ -112,7 +111,7 @@ public class Client {
         String connectionToken = fetchConnectionTokenSafely();
         String subscriptionToken = fetchSubscriptionTokenSafely();
 
-        centrifugoManager.connect(connectionToken, subscriptionToken, this::fetchInitialConfigs);
+        centrifugoManager.connect(connectionToken, subscriptionToken, this::fetchInitialState);
     }
 
     /**
@@ -185,16 +184,21 @@ public class Client {
         }
     }
 
-    private void fetchInitialConfigs() {
+    /**
+     * Fetches initial state using the new /v1/services/{name}/envs/{env}/state endpoint.
+     * Handles global versions, gradual rollouts, and canary states.
+     */
+    private void fetchInitialState() {
         if (serviceName == null || envName == null) {
-            LOGGER.warning("Cannot fetch configs: serviceName or envName not set");
+            LOGGER.warning("Cannot fetch state: serviceName or envName not set");
             return;
         }
 
         try {
-            String url = baseUrl + "/v1/configs?serviceName=" +
+            String url = baseUrl + "/v1/services/" +
                     URLEncoder.encode(serviceName, StandardCharsets.UTF_8) +
-                    "&environment=" + URLEncoder.encode(envName, StandardCharsets.UTF_8);
+                    "/envs/" + URLEncoder.encode(envName, StandardCharsets.UTF_8) +
+                    "/state";
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -205,137 +209,199 @@ public class Client {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                parseAndCacheConfigs(response.body());
+                parseAndCacheState(response.body());
             } else {
-                LOGGER.warning("Failed to fetch initial configs. Status: " + response.statusCode());
+                LOGGER.warning("Failed to fetch initial state. Status: " + response.statusCode());
             }
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error fetching initial configs", e);
-        }
-
-        // Fetch active rollouts to restore gradual rollout state on reconnect
-        fetchActiveRollouts();
-    }
-
-    /**
-     * Fetches active rollouts from the backend and subscribes to appropriate gradual channels.
-     * This is called on connect/reconnect to restore delivery state.
-     */
-    private void fetchActiveRollouts() {
-        if (serviceName == null || envName == null) {
-            return;
-        }
-
-        try {
-            String url = baseUrl + "/v1/rollouts/active?serviceName=" +
-                    URLEncoder.encode(serviceName, StandardCharsets.UTF_8) +
-                    "&environment=" + URLEncoder.encode(envName, StandardCharsets.UTF_8);
-
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("Accept", "application/json")
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 200) {
-                RolloutResponse[] rollouts = objectMapper.readValue(response.body(), RolloutResponse[].class);
-                for (RolloutResponse rollout : rollouts) {
-                    handleActiveRollout(rollout);
-                }
-                if (rollouts.length > 0) {
-                    LOGGER.info("Restored " + rollouts.length + " active rollout(s) on reconnect");
-                }
-            } else {
-                LOGGER.warning("Failed to fetch active rollouts. Status: " + response.statusCode());
-            }
-        } catch (Exception e) {
-            LOGGER.log(Level.WARNING, "Error fetching active rollouts (non-critical)", e);
+            LOGGER.log(Level.SEVERE, "Error fetching initial state", e);
         }
     }
 
     /**
-     * Handles an active rollout fetched from the backend on reconnect.
-     * Subscribes to the gradual channel if this instance should receive the update.
+     * Parses the ConfigStateResponse and populates the config cache.
+     * Determines the appropriate version for each config based on:
+     * - globalVersion/globalPayload: version rolled out to all instances
+     * - gradualRollout: if active and instance is in current deployment, use target version
+     * - canary: if active and instance is in canary percentage, use canary version
+     * - latestVersion/latestPayload: fallback if no global version exists
      */
-    private void handleActiveRollout(RolloutResponse rollout) {
-        if (!"gradual".equals(rollout.type) || rollout.totalDeployments == null || rollout.currentDeployment == null) {
-            return;
-        }
-
-        // Calculate which deployment bucket this instance belongs to
-        int myDeploymentNumber = gradualRolloutManager.calculateDeploymentBucket(rollout.totalDeployments);
-
-        // Only subscribe if my deployment number is <= current deployment
-        // (meaning the update has been deployed to my bucket)
-        if (myDeploymentNumber <= rollout.currentDeployment) {
-            LOGGER.info("Reconnect: subscribing to gradual channel for rollout " + rollout.id + 
-                    " (my deployment: " + myDeploymentNumber + ", current: " + rollout.currentDeployment + ")");
-            // Use configId.toString() as the rollout key since we need a key for channel naming
-            centrifugoManager.subscribeToGradualChannel(rollout.configId.toString(), myDeploymentNumber);
-        }
-    }
-
-    private void parseAndCacheConfigs(String responseBody) {
+    private void parseAndCacheState(String responseBody) {
         try {
-            ConfigListResponse response = objectMapper.readValue(responseBody, ConfigListResponse.class);
+            ConfigStateResponse response = objectMapper.readValue(responseBody, ConfigStateResponse.class);
 
-            if (response.configs != null) {
-                cacheLock.writeLock().lock();
-                try {
-                    for (ConfigItem item : response.configs) {
-                        Config config = new Config(item.configKey, item.currentVersion, item.latestVersion.payload);
-                        configCache.put(item.configKey, config);
+            if (response.configs == null || response.configs.isEmpty()) {
+                LOGGER.info("No configs found in state response");
+                return;
+            }
+
+            cacheLock.writeLock().lock();
+            try {
+                for (ConfigStateEntry entry : response.configs) {
+                    if (entry.configKey == null) continue;
+                    
+                    Config config = determineConfigVersion(entry);
+                    if (config != null) {
+                        configCache.put(entry.configKey, config);
+                        LOGGER.info("Initialized config '" + entry.configKey + "' to version " + config.version());
                     }
-                } finally {
-                    cacheLock.writeLock().unlock();
                 }
-                notifyCallbacksForAllConfigs();
+            } finally {
+                cacheLock.writeLock().unlock();
             }
+            notifyCallbacksForAllConfigs();
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error parsing configs response", e);
+            LOGGER.log(Level.SEVERE, "Error parsing state response", e);
         }
+    }
+
+    /**
+     * Determines the appropriate config version based on the state entry.
+     * Priority: canary > gradual rollout > global > latest
+     */
+    private Config determineConfigVersion(ConfigStateEntry entry) {
+        String key = entry.configKey;
+        
+        // Check if this instance should receive canary version
+        if (entry.canary != null && "completed".equals(entry.canary.status)) {
+            if (gradualRolloutManager.isInCanary(entry.canary.percentage)) {
+                LOGGER.info("Instance is in canary for config '" + key + 
+                        "' using version " + entry.canary.canaryVersion);
+                return new Config(key, entry.canary.canaryVersion, entry.canary.canaryPayload);
+            }
+        }
+        
+        // Check if this instance should receive gradual rollout version
+        if (entry.gradualRollout != null && "in_progress".equals(entry.gradualRollout.status)) {
+            GradualRolloutState gradual = entry.gradualRollout;
+            int myBucket = gradualRolloutManager.calculateDeploymentBucket(
+                    key, gradual.targetVersion, gradual.totalDeployments);
+            
+            // If this instance's bucket is within already deployed range
+            if (myBucket <= gradual.currentDeployment) {
+                LOGGER.info("Instance is in gradual rollout for config '" + key + 
+                        "' bucket " + myBucket + " of " + gradual.totalDeployments + 
+                        " using version " + gradual.targetVersion);
+                return new Config(key, gradual.targetVersion, gradual.targetPayload);
+            }
+        }
+        
+        // Use global version if available (rolled out to all instances)
+        if (entry.globalVersion != null && entry.globalVersion > 0) {
+            return new Config(key, entry.globalVersion, entry.globalPayload);
+        }
+        
+        // Fallback to latest version (may not be rolled out yet)
+        if (entry.latestVersion != null && entry.latestVersion > 0) {
+            LOGGER.info("Using latest version for config '" + key + 
+                    "' (no global version available)");
+            return new Config(key, entry.latestVersion, entry.latestPayload);
+        }
+        
+        return null;
     }
 
     /**
      * Handles a publication from Centrifugo.
      * 
      * @param event the publication event
-     * @param fromGradualChannel true if this publication came from a gradual rollout channel
      */
-    private void handlePublication(PublicationEvent event, boolean fromGradualChannel) {
+    private void handlePublication(PublicationEvent event) {
         try {
             byte[] data = event.getData();
             if (data == null) return;
 
             CentrifugoMessage message = objectMapper.readValue(data, CentrifugoMessage.class);
 
-            if ("gradual_start".equals(message.type)) {
-                handleGradualRollout(message);
-                return;
+            switch (message.type) {
+                case "gradual_deploy" -> handleGradualDeploy(message);
+                case "canary_deploy" -> handleCanaryDeploy(message);
+                case "config_deleted" -> handleConfigDeleted(message);
+                case "update" -> handleConfigUpdate(message);
+                default -> LOGGER.warning("Unknown message type: " + message.type);
             }
-
-            handleConfigUpdate(message, fromGradualChannel);
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error handling publication", e);
         }
     }
 
-    private void handleGradualRollout(CentrifugoMessage message) {
-        if (message.key == null || message.deployments == null) {
-            LOGGER.warning("Invalid gradual rollout message: missing key or deployments");
+    /**
+     * Handles a gradual_deploy message.
+     * Only processes the update if this instance's bucket matches the deployment number.
+     */
+    private void handleGradualDeploy(CentrifugoMessage message) {
+        if (message.key == null || message.version == 0 || message.deployment == null || message.totalDeployments == null) {
+            LOGGER.warning("Invalid gradual_deploy message: missing required fields");
             return;
         }
 
-        int deploymentNumber = gradualRolloutManager.calculateDeploymentBucket(message.deployments);
-        LOGGER.info("Gradual rollout: key=" + message.key + ", deployment " + deploymentNumber + " of " + message.deployments);
-        centrifugoManager.subscribeToGradualChannel(message.key, deploymentNumber);
+        // Check if this instance should process this deployment
+        // Uses configKey and version to ensure different instance ordering per deployment
+        if (!gradualRolloutManager.shouldProcessGradualDeploy(
+                message.key, message.version, message.deployment, message.totalDeployments)) {
+            return; // Not this instance's turn
+        }
+
+        LOGGER.info("Processing gradual_deploy for config '" + message.key + 
+                "' v" + message.version + " deployment " + message.deployment + " of " + message.totalDeployments);
+        
+        handleConfigUpdate(message);
     }
 
-    private void handleConfigUpdate(CentrifugoMessage message, boolean fromGradualChannel) {
+    /**
+     * Handles a canary_deploy message.
+     * Only processes the update if this instance is in the canary percentage.
+     */
+    private void handleCanaryDeploy(CentrifugoMessage message) {
+        if (message.key == null || message.version == 0 || message.canaryPercentage == null) {
+            LOGGER.warning("Invalid canary_deploy message: missing required fields");
+            return;
+        }
+
+        // Check if this instance is in the canary group
+        if (!gradualRolloutManager.isInCanary(message.canaryPercentage)) {
+            LOGGER.fine("Ignoring canary_deploy for config '" + message.key + 
+                    "' - instance not in canary (percentage: " + message.canaryPercentage + "%)");
+            return;
+        }
+
+        LOGGER.info("Processing canary_deploy for config '" + message.key + 
+                "' v" + message.version + " (canary percentage: " + message.canaryPercentage + "%)");
+        
+        handleConfigUpdate(message);
+    }
+
+    /**
+     * Handles a config_deleted message.
+     * Removes the config from cache and notifies callbacks with null.
+     */
+    private void handleConfigDeleted(CentrifugoMessage message) {
+        if (message.key == null) {
+            LOGGER.warning("Invalid config_deleted message: missing key");
+            return;
+        }
+
         String key = message.key;
-        int newVersion = message.version;
+        Config removedConfig;
+        
+        cacheLock.writeLock().lock();
+        try {
+            removedConfig = configCache.remove(key);
+        } finally {
+            cacheLock.writeLock().unlock();
+        }
+
+        if (removedConfig != null) {
+            LOGGER.info("Deleted config '" + key + "'");
+        }
+        
+        // Notify callbacks with null to indicate deletion
+        notifyCallbacksOfDeletion(key);
+    }
+
+    private void handleConfigUpdate(CentrifugoMessage message) {
+        String key = message.key;
+        long newVersion = message.version;
 
         Config newConfig = null;
         cacheLock.writeLock().lock();
@@ -356,12 +422,6 @@ public class Client {
         if (newConfig != null) {
             notifyCallbacks(newConfig);
         }
-
-        // Auto-unsubscribe from gradual channel after receiving config update from it
-        if (fromGradualChannel) {
-            LOGGER.info("Received config update from gradual channel, unsubscribing...");
-            centrifugoManager.unsubscribeFromGradualChannel();
-        }
     }
 
     private void notifyCallbacks(Config config) {
@@ -370,6 +430,19 @@ public class Client {
                 callback.accept(config);
             } catch (Exception e) {
                 LOGGER.log(Level.WARNING, "Error in callback for config: " + config.key(), e);
+            }
+        }
+    }
+
+    /**
+     * Notifies callbacks of a config deletion by passing null.
+     */
+    private void notifyCallbacksOfDeletion(String key) {
+        for (Consumer<Config> callback : callbacks) {
+            try {
+                callback.accept(null);
+            } catch (Exception e) {
+                LOGGER.log(Level.WARNING, "Error in callback for deleted config: " + key, e);
             }
         }
     }

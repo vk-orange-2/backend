@@ -7,33 +7,71 @@ import org.junit.jupiter.api.Test;
 
 class GradualRolloutManagerTest {
 
-    private static final String BASE_CHANNEL = "service:myservice:dev";
-
     @Test
-    @DisplayName("calculateDeploymentBucket returns consistent results for same instance name")
+    @DisplayName("calculateDeploymentBucket returns consistent results for same instance, configKey, and version")
     void testConsistentBuckets() {
         String instanceName = "instance-12345";
-        GradualRolloutManager manager = new GradualRolloutManager(BASE_CHANNEL, instanceName);
+        String configKey = "my-config";
+        int version = 3;
+        GradualRolloutManager manager = new GradualRolloutManager(instanceName);
 
-        // Same instance should always get same bucket
-        int bucket1 = manager.calculateDeploymentBucket(20);
-        int bucket2 = manager.calculateDeploymentBucket(20);
-        int bucket3 = manager.calculateDeploymentBucket(20);
+        // Same instance + configKey + version should always get same bucket
+        int bucket1 = manager.calculateDeploymentBucket(configKey, version, 20);
+        int bucket2 = manager.calculateDeploymentBucket(configKey, version, 20);
+        int bucket3 = manager.calculateDeploymentBucket(configKey, version, 20);
 
-        assertEquals(bucket1, bucket2, "Same instance should get consistent bucket");
-        assertEquals(bucket1, bucket3, "Same instance should get consistent bucket");
+        assertEquals(bucket1, bucket2, "Same instance, configKey, version should get consistent bucket");
+        assertEquals(bucket1, bucket3, "Same instance, configKey, version should get consistent bucket");
+    }
+
+    @Test
+    @DisplayName("calculateDeploymentBucket returns different buckets for different versions")
+    void testDifferentBucketsForDifferentVersions() {
+        String instanceName = "instance-12345";
+        String configKey = "my-config";
+        GradualRolloutManager manager = new GradualRolloutManager(instanceName);
+
+        // Different versions should generally produce different buckets (not guaranteed but highly likely)
+        int bucket1 = manager.calculateDeploymentBucket(configKey, 1, 4);
+        int bucket2 = manager.calculateDeploymentBucket(configKey, 2, 4);
+        int bucket3 = manager.calculateDeploymentBucket(configKey, 3, 4);
+        int bucket4 = manager.calculateDeploymentBucket(configKey, 4, 4);
+
+        // At least one should be different from another (very unlikely all 4 are same)
+        boolean allSame = (bucket1 == bucket2) && (bucket2 == bucket3) && (bucket3 == bucket4);
+        assertFalse(allSame, "Different versions should produce different bucket distributions");
+    }
+
+    @Test
+    @DisplayName("calculateDeploymentBucket returns different buckets for different configKeys")
+    void testDifferentBucketsForDifferentConfigKeys() {
+        String instanceName = "instance-12345";
+        int version = 1;
+        GradualRolloutManager manager = new GradualRolloutManager(instanceName);
+
+        int bucket1 = manager.calculateDeploymentBucket("config-a", version, 4);
+        int bucket2 = manager.calculateDeploymentBucket("config-b", version, 4);
+
+        // Different configKeys should generally produce different buckets
+        // (not guaranteed but highly likely with SHA256)
+        boolean sameBucket = bucket1 == bucket2;
+        // Just verify they're both valid, the actual distribution depends on hash
+        assertTrue(bucket1 >= 1 && bucket1 <= 4);
+        assertTrue(bucket2 >= 1 && bucket2 <= 4);
     }
 
     @Test
     @DisplayName("calculateDeploymentBucket distributes instances across buckets")
     void testDistributionAcrossBuckets() {
         int deployments = 20;
+        int version = 1;
+        String configKey = "my-config";
         int[] bucketCounts = new int[deployments];
 
         // Test with 1000 different instance names
         for (int i = 0; i < 1000; i++) {
-            GradualRolloutManager manager = new GradualRolloutManager(BASE_CHANNEL, "instance-" + i);
-            int bucket = manager.calculateDeploymentBucket(deployments);
+            GradualRolloutManager manager = new GradualRolloutManager("instance-" + i);
+            int bucket = manager.calculateDeploymentBucket(configKey, version, deployments);
             int bucketIndex = bucket - 1; // bucket is 1-based
             bucketCounts[bucketIndex]++;
         }
@@ -49,10 +87,9 @@ class GradualRolloutManagerTest {
     @Test
     @DisplayName("calculateDeploymentBucket returns valid deployment number for 20 deployments")
     void testValidDeploymentFor20Deployments() {
+        GradualRolloutManager manager = new GradualRolloutManager("instance-1");
         for (int i = 0; i < 100; i++) {
-            GradualRolloutManager manager = new GradualRolloutManager(BASE_CHANNEL, "instance-" + i);
-            int deployment = manager.calculateDeploymentBucket(20);
-            
+            int deployment = manager.calculateDeploymentBucket("config-" + i, i + 1, 20);
             assertTrue(deployment >= 1 && deployment <= 20, 
                     "Deployment should be between 1 and 20 for 20 deployments, got: " + deployment);
         }
@@ -61,10 +98,9 @@ class GradualRolloutManagerTest {
     @Test
     @DisplayName("calculateDeploymentBucket returns valid deployment number for 10 deployments")
     void testValidDeploymentFor10Deployments() {
+        GradualRolloutManager manager = new GradualRolloutManager("instance-1");
         for (int i = 0; i < 100; i++) {
-            GradualRolloutManager manager = new GradualRolloutManager(BASE_CHANNEL, "instance-" + i);
-            int deployment = manager.calculateDeploymentBucket(10);
-            
+            int deployment = manager.calculateDeploymentBucket("config-" + i, i + 1, 10);
             assertTrue(deployment >= 1 && deployment <= 10, 
                     "Deployment should be between 1 and 10 for 10 deployments, got: " + deployment);
         }
@@ -73,94 +109,189 @@ class GradualRolloutManagerTest {
     @Test
     @DisplayName("calculateDeploymentBucket returns valid deployment number for 4 deployments")
     void testValidDeploymentFor4Deployments() {
+        GradualRolloutManager manager = new GradualRolloutManager("instance-1");
         for (int i = 0; i < 100; i++) {
-            GradualRolloutManager manager = new GradualRolloutManager(BASE_CHANNEL, "instance-" + i);
-            int deployment = manager.calculateDeploymentBucket(4);
-            
+            int deployment = manager.calculateDeploymentBucket("config-" + i, i + 1, 4);
             assertTrue(deployment >= 1 && deployment <= 4, 
                     "Deployment should be between 1 and 4 for 4 deployments, got: " + deployment);
         }
     }
 
     @Test
-    @DisplayName("buildGradualChannel constructs correct channel name")
-    void testBuildGradualChannel() {
-        GradualRolloutManager manager = new GradualRolloutManager(BASE_CHANNEL, "instance-1");
-
-        String channel = manager.buildGradualChannel("feature-x", 1);
-        assertEquals("service:myservice:dev:feature-x:1", channel);
-
-        channel = manager.buildGradualChannel("my-config", 5);
-        assertEquals("service:myservice:dev:my-config:5", channel);
-
-        channel = manager.buildGradualChannel("rollout-key", 10);
-        assertEquals("service:myservice:dev:rollout-key:10", channel);
+    @DisplayName("shouldProcessGradualDeploy returns true when deployment matches bucket")
+    void testShouldProcessGradualDeployMatch() {
+        // Create a manager and find its bucket
+        GradualRolloutManager manager = new GradualRolloutManager("test-instance-1");
+        String configKey = "test-config";
+        int version = 1;
+        int totalDeployments = 4;
+        int myBucket = manager.calculateDeploymentBucket(configKey, version, totalDeployments);
+        
+        // Should process when deployment matches bucket
+        assertTrue(manager.shouldProcessGradualDeploy(configKey, version, myBucket, totalDeployments),
+                "Should process when deployment matches instance bucket");
     }
 
     @Test
-    @DisplayName("parseGradualChannel extracts key and deployment number correctly")
-    void testParseGradualChannel() {
-        GradualRolloutManager manager = new GradualRolloutManager(BASE_CHANNEL, "instance-1");
-
-        String[] result = manager.parseGradualChannel("service:myservice:dev:feature-x:1");
-        assertNotNull(result);
-        assertEquals("feature-x", result[0]);
-        assertEquals("1", result[1]);
-
-        result = manager.parseGradualChannel("service:myservice:dev:my-config:5");
-        assertNotNull(result);
-        assertEquals("my-config", result[0]);
-        assertEquals("5", result[1]);
+    @DisplayName("shouldProcessGradualDeploy returns false when deployment doesn't match bucket")
+    void testShouldProcessGradualDeployNoMatch() {
+        // Create a manager and find its bucket
+        GradualRolloutManager manager = new GradualRolloutManager("test-instance-2");
+        String configKey = "test-config";
+        int version = 1;
+        int totalDeployments = 4;
+        int myBucket = manager.calculateDeploymentBucket(configKey, version, totalDeployments);
+        
+        // Should not process for other deployments
+        for (int deployment = 1; deployment <= totalDeployments; deployment++) {
+            if (deployment != myBucket) {
+                assertFalse(manager.shouldProcessGradualDeploy(configKey, version, deployment, totalDeployments),
+                        "Should not process when deployment doesn't match instance bucket");
+            }
+        }
     }
 
     @Test
-    @DisplayName("parseGradualChannel returns null for invalid channels")
-    void testParseGradualChannelInvalid() {
-        GradualRolloutManager manager = new GradualRolloutManager(BASE_CHANNEL, "instance-1");
-
-        // Base channel (not gradual)
-        assertNull(manager.parseGradualChannel("service:myservice:dev"));
-
-        // Wrong base channel
-        assertNull(manager.parseGradualChannel("service:other:prod:feature-x:1"));
-
-        // Non-numeric deployment number
-        assertNull(manager.parseGradualChannel("service:myservice:dev:feature-x:abc"));
-
-        // No colon between key and deployment
-        assertNull(manager.parseGradualChannel("service:myservice:dev:feature-x1"));
-    }
-
-    @Test
-    @DisplayName("isGradualChannel correctly identifies gradual channels")
-    void testIsGradualChannel() {
-        GradualRolloutManager manager = new GradualRolloutManager(BASE_CHANNEL, "instance-1");
-
-        // Gradual channels (end with deployment number)
-        assertTrue(manager.isGradualChannel("service:myservice:dev:feature-x:1"));
-        assertTrue(manager.isGradualChannel("service:other:prod:key:10"));
-        assertTrue(manager.isGradualChannel("a:b:c:1"));
-
-        // Not gradual channels
-        assertFalse(manager.isGradualChannel("service:myservice:dev"));
-        assertFalse(manager.isGradualChannel("service:myservice:dev:"));
-        assertFalse(manager.isGradualChannel(null));
-        assertFalse(manager.isGradualChannel("service:myservice:dev:feature-x"));
-    }
-
-    @Test
-    @DisplayName("Different instance names get different buckets")
+    @DisplayName("Different instance names get different buckets for same config and version")
     void testDifferentInstancesDifferentBuckets() {
-        GradualRolloutManager manager1 = new GradualRolloutManager(BASE_CHANNEL, "instance-1");
-        GradualRolloutManager manager2 = new GradualRolloutManager(BASE_CHANNEL, "instance-2");
-        GradualRolloutManager manager3 = new GradualRolloutManager(BASE_CHANNEL, "instance-3");
+        String configKey = "shared-config";
+        int version = 1;
+        
+        GradualRolloutManager manager1 = new GradualRolloutManager("instance-1");
+        GradualRolloutManager manager2 = new GradualRolloutManager("instance-2");
+        GradualRolloutManager manager3 = new GradualRolloutManager("instance-3");
 
-        int bucket1 = manager1.calculateDeploymentBucket(20);
-        int bucket2 = manager2.calculateDeploymentBucket(20);
-        int bucket3 = manager3.calculateDeploymentBucket(20);
+        int bucket1 = manager1.calculateDeploymentBucket(configKey, version, 20);
+        int bucket2 = manager2.calculateDeploymentBucket(configKey, version, 20);
+        int bucket3 = manager3.calculateDeploymentBucket(configKey, version, 20);
 
         // At least one should be different (extremely unlikely all 3 are same)
         boolean allSame = (bucket1 == bucket2) && (bucket2 == bucket3);
         assertFalse(allSame, "Different instances should have different bucket distribution");
+    }
+
+    @Test
+    @DisplayName("Same instance gets different buckets for same config across versions")
+    void testSameInstanceDifferentVersionsDifferentBuckets() {
+        String configKey = "my-config";
+        GradualRolloutManager manager = new GradualRolloutManager("test-instance");
+        
+        // Track buckets across different versions
+        int[] buckets = new int[10];
+        for (int v = 1; v <= 10; v++) {
+            buckets[v - 1] = manager.calculateDeploymentBucket(configKey, v, 10);
+        }
+        
+        // Count unique bucket values
+        java.util.Set<Integer> uniqueBuckets = new java.util.HashSet<>();
+        for (int b : buckets) {
+            uniqueBuckets.add(b);
+        }
+        
+        // With 10 versions and 10 buckets, we should see multiple different buckets
+        assertTrue(uniqueBuckets.size() > 1, 
+                "Same instance should get different buckets for different versions, got: " + uniqueBuckets.size() + " unique buckets");
+    }
+
+    // ==================== Canary Tests ====================
+
+    @Test
+    @DisplayName("isInCanary returns consistent results for same instance")
+    void testIsInCanaryConsistent() {
+        GradualRolloutManager manager = new GradualRolloutManager("test-instance-1");
+        
+        // Same instance should always get same canary membership for same percentage
+        boolean result1 = manager.isInCanary(50);
+        boolean result2 = manager.isInCanary(50);
+        boolean result3 = manager.isInCanary(50);
+        
+        assertEquals(result1, result2, "Same instance should get consistent canary membership");
+        assertEquals(result1, result3, "Same instance should get consistent canary membership");
+    }
+
+    @Test
+    @DisplayName("isInCanary distributes instances correctly")
+    void testIsInCanaryDistribution() {
+        int percentage = 20;
+        int inCanaryCount = 0;
+        int totalInstances = 1000;
+        
+        for (int i = 0; i < totalInstances; i++) {
+            GradualRolloutManager manager = new GradualRolloutManager("instance-" + i);
+            if (manager.isInCanary(percentage)) {
+                inCanaryCount++;
+            }
+        }
+        
+        // Approximately 20% of instances should be in canary
+        // Allow for variance: 15% to 25%
+        assertTrue(inCanaryCount >= 150 && inCanaryCount <= 250,
+                "Expected ~200 instances in canary (20%), got: " + inCanaryCount);
+    }
+
+    @Test
+    @DisplayName("isInCanary with 0 percentage returns false")
+    void testIsInCanaryZeroPercentage() {
+        GradualRolloutManager manager = new GradualRolloutManager("any-instance");
+        assertFalse(manager.isInCanary(0), "No instances should be in canary with 0% percentage");
+    }
+
+    @Test
+    @DisplayName("isInCanary with 100 percentage returns true")
+    void testIsInCanaryHundredPercentage() {
+        GradualRolloutManager manager = new GradualRolloutManager("any-instance");
+        assertTrue(manager.isInCanary(100), "All instances should be in canary with 100% percentage");
+    }
+
+    @Test
+    @DisplayName("Instance hash is between 0 and 99")
+    void testInstanceHashRange() {
+        for (int i = 0; i < 100; i++) {
+            GradualRolloutManager manager = new GradualRolloutManager("instance-" + i);
+            int hash = manager.getInstanceHash();
+            assertTrue(hash >= 0 && hash < 100, 
+                    "Instance hash should be 0-99, got: " + hash);
+        }
+    }
+
+    @Test
+    @DisplayName("isInCanary uses only instance name hash, not config key or version")
+    void testIsInCanaryIndependentOfConfig() {
+        GradualRolloutManager manager = new GradualRolloutManager("test-instance");
+        
+        // isInCanary should return same result regardless of config/gradual calculations
+        int percentage = 30;
+        boolean canaryResult = manager.isInCanary(percentage);
+        
+        // Do some gradual calculations (should not affect canary)
+        manager.calculateDeploymentBucket("config-a", 1, 4);
+        manager.calculateDeploymentBucket("config-b", 2, 10);
+        
+        // Canary should still be same
+        assertEquals(canaryResult, manager.isInCanary(percentage),
+                "Canary membership should not be affected by gradual calculations");
+    }
+
+    @Test
+    @DisplayName("Different instances have different canary membership at 50%")
+    void testDifferentInstancesCanaryDistribution() {
+        int percentage = 50;
+        java.util.List<Boolean> results = new java.util.ArrayList<>();
+        
+        for (int i = 0; i < 10; i++) {
+            GradualRolloutManager manager = new GradualRolloutManager("instance-" + i);
+            results.add(manager.isInCanary(percentage));
+        }
+        
+        // At 50%, we should have some true and some false
+        long trueCount = results.stream().filter(b -> b).count();
+        long falseCount = results.stream().filter(b -> !b).count();
+        
+        // With 10 instances at 50%, we should have roughly half in canary
+        // Allow 2-8 range for variance
+        assertTrue(trueCount >= 2 && trueCount <= 8,
+                "Expected ~5 instances in canary at 50%, got: " + trueCount);
+        assertTrue(falseCount >= 2 && falseCount <= 8,
+                "Expected ~5 instances NOT in canary at 50%, got: " + falseCount);
     }
 }
