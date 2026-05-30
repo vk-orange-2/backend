@@ -47,7 +47,7 @@ cd config-server
 
 Тесты используют H2 in-memory, Docker не нужен
 
-## Мониторинг
+## Мониторинг и трассировка
 
 ### Backend
 - Prometheus endpoint: `http://localhost:8081/actuator/prometheus`
@@ -58,3 +58,24 @@ cd config-server
 
 ### Grafana
 - Dashboards: `http://localhost:3000`
+
+### Zipkin
+
+Zipkin используется для distributed tracing и позволяет отслеживать полный путь прохождения запроса через систему
+
+Web UI:
+```
+http://localhost:9411
+```
+
+После выполнения запросов к Config Server в Zipkin будут доступны трейсы с информацией о:
+- HTTP-запросах;
+- вызовах сервисного слоя;
+- обращениях к PostgreSQL;
+- времени выполнения отдельных операций.
+
+Для поиска трейсов выберите сервис:
+```
+config-server
+```
+и нажмите **Run Query**

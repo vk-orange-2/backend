@@ -2,6 +2,7 @@ package ru.configplatform.configserver.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -33,6 +34,10 @@ public class AuditService {
      *
      * Вызывается внутри той же транзакции, что и изменение конфига, чтобы гарантировать консистентность
      */
+    @Observed(
+            name = "audit.log",
+            contextualName = "audit-log"
+    )
     @Transactional(propagation = Propagation.MANDATORY)
     public void log(
             ConfigEntity config,
@@ -59,6 +64,10 @@ public class AuditService {
         auditLogRepository.save(entry);
     }
 
+    @Observed(
+            name = "audit.search",
+            contextualName = "audit-search"
+    )
     @Transactional(readOnly = true)
     public AuditSearchResponse search(
             String serviceName,

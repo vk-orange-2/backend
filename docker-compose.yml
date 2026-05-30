@@ -129,6 +129,13 @@ services:
     depends_on:
       - prometheus
 
+  # ---- Zipkin ----
+  zipkin:
+    image: openzipkin/zipkin
+    container_name: zipkin
+    ports:
+      - "9411:9411"
+
 volumes:
   pgdata:
   redis-data:

@@ -2,6 +2,7 @@ package ru.configplatform.configserver.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -38,6 +39,10 @@ public class ConfigService {
     /**
      * Создает новый конфиг или обновляет существующий (upsert по service+env+key)
      */
+    @Observed(
+            name = "config.create_or_update",
+            contextualName = "create-config"
+    )
     @Transactional
     public ConfigResponse createOrUpdate(CreateConfigRequest request, RequestContext ctx) {
         payloadValidator.validate(request.getValue(), "json");
@@ -114,6 +119,10 @@ public class ConfigService {
     /**
      * Получить конфиг по его идентификатору.
      */
+    @Observed(
+            name = "config.get",
+            contextualName = "get-config"
+    )
     @Transactional(readOnly = true)
     public ConfigResponse getById(UUID id) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
@@ -125,6 +134,10 @@ public class ConfigService {
     /**
      * Получить конфиги по имени сервиса и окружению.
      */
+    @Observed(
+            name = "config.get_all",
+            contextualName = "get-configs"
+    )
     @Transactional(readOnly = true)
     public ConfigListResponse getConfigs(String serviceName, String envCode) {
         ServiceEntity service = serviceRepository.findByName(serviceName).orElse(null);
@@ -156,6 +169,10 @@ public class ConfigService {
      * ВАЖНО: Публикация в Centrifugo НЕ происходит здесь.
      * Доставка клиентам выполняется через Rollout API.
      */
+    @Observed(
+            name = "config.update",
+            contextualName = "update-config"
+    )
     @Transactional
     public ConfigResponse updateById(UUID id, UpdateConfigRequest request, RequestContext ctx) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
@@ -192,6 +209,10 @@ public class ConfigService {
      * Удаление — особый случай. Оно НЕ требует rollout, т.к. это административная операция.
      * Удалённый конфиг больше не существует.
      */
+    @Observed(
+            name = "config.delete",
+            contextualName = "delete-config"
+    )
     @Transactional
     public void deleteById(UUID id, Long expectedVersion, RequestContext ctx) {
         ConfigEntity config = configRepository.findByIdAndStatus(id, "active")
@@ -230,6 +251,10 @@ public class ConfigService {
     /**
      * Возвращает полную историю версий конфигурации.
      */
+    @Observed(
+            name = "config.get_history",
+            contextualName = "config-history"
+    )
     @Transactional(readOnly = true)
     public VersionHistoryResponse getVersionHistory(UUID configId) {
         ConfigEntity config = configRepository.findById(configId)
@@ -248,6 +273,10 @@ public class ConfigService {
     /**
      * Возвращает конкретную версию конфигурации.
      */
+    @Observed(
+            name = "config.get_version",
+            contextualName = "config-version"
+    )
     @Transactional(readOnly = true)
     public VersionResponse getVersion(UUID configId, long version) {
         ConfigEntity config = configRepository.findById(configId)
@@ -264,6 +293,10 @@ public class ConfigService {
     /**
      * Вычисляет diff между двумя версиями конфигурации.
      */
+    @Observed(
+            name = "config.state.load",
+            contextualName = "load-config-state"
+    )
     @Transactional(readOnly = true)
     public DiffResponse getDiff(UUID configId, long versionFrom, long versionTo) {
         ConfigEntity config = configRepository.findById(configId)
@@ -279,6 +312,10 @@ public class ConfigService {
     /**
      * Список всех сервисов
      */
+    @Observed(
+            name = "service.get",
+            contextualName = "get-services"
+    )
     @Transactional(readOnly = true)
     public List<ServiceResponse> getServices() {
         return serviceRepository.findAll().stream()
@@ -295,6 +332,10 @@ public class ConfigService {
      * Создать новый сервис явно.
      * Если сервис с таким именем уже существует — возвращает 409 CONFLICT.
      */
+    @Observed(
+            name = "service.create",
+            contextualName = "create-service"
+    )
     @Transactional
     public ServiceResponse createService(CreateServiceRequest request) {
         serviceRepository.findByName(request.getName()).ifPresent(existing -> {
