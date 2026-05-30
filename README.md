@@ -46,3 +46,15 @@ cd config-server
 ```
 
 Тесты используют H2 in-memory, Docker не нужен
+
+## Мониторинг
+
+### Backend
+- Prometheus endpoint: `http://localhost:8081/actuator/prometheus`
+- Health: `http://localhost:8081/actuator/health`
+
+### Centrifugo
+- Prometheus metrics: `http://<centrifugo-host>:<metrics-port>/metrics`
+
+### Grafana
+- Dashboards: `http://localhost:3000`

@@ -91,4 +91,6 @@ public interface RolloutRepository extends JpaRepository<RolloutEntity, UUID> {
             "AND r.status = 'completed' " +
             "ORDER BY r.completedAt DESC")
     List<RolloutEntity> findCompletedFullRolloutsByConfigId(@Param("configId") UUID configId);
+
+    long countByStatusIn(java.util.Collection<RolloutStatus> statuses);
 }
