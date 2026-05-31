@@ -1,0 +1,14 @@
+[
+    {
+        "labels": {
+            "job": "client-sdk",
+            "application": "demo-service"
+        },
+        "targets": [
+            "host.docker.internal:8091",
+            "host.docker.internal:8092",
+            "host.docker.internal:8093",
+            "host.docker.internal:8094"
+        ]
+    }
+]

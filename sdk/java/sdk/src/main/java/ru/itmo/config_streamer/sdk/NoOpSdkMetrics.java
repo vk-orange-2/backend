@@ -7,12 +7,12 @@ package ru.itmo.config_streamer.sdk;
 class NoOpSdkMetrics implements SdkMetrics {
 
     @Override
-    public void recordDeliveryTime(String configKey, String messageType, long deliveryTimeMs) {
+    public void recordDeliveryTime(long deliveryTimeMs) {
         // No-op
     }
 
     @Override
-    public void incrementMessagesReceived(String configKey, String messageType) {
+    public void incrementMessagesReceived(String messageType) {
         // No-op
     }
 

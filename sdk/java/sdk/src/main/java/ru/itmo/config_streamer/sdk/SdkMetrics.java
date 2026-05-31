@@ -14,14 +14,14 @@ interface SdkMetrics {
      * @param messageType the message type (update, gradual_deploy, canary_deploy, etc.)
      * @param deliveryTimeMs delivery time in milliseconds
      */
-    void recordDeliveryTime(String configKey, String messageType, long deliveryTimeMs);
+    void recordDeliveryTime(long deliveryTimeMs);
 
     /**
      * Increments the message received counter.
      * @param configKey the config key
      * @param messageType the message type
      */
-    void incrementMessagesReceived(String configKey, String messageType);
+    void incrementMessagesReceived(String messageType);
 
     /**
      * Increments active connections gauge.

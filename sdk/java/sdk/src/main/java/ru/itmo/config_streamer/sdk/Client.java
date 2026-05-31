@@ -363,18 +363,17 @@ public class Client {
             }
 
             // Record metrics
-            String configKey = message.key != null ? message.key : "unknown";
             String messageType = message.type != null ? message.type : "unknown";
 
-            metrics.incrementMessagesReceived(configKey, messageType);
+            metrics.incrementMessagesReceived(messageType);
 
             // Record delivery time if timestamp is present
             if (message.timestamp != null) {
                 try {
                     long deliveryTimeMs = System.currentTimeMillis() - 
                         Instant.parse(message.timestamp).toEpochMilli();
-                    metrics.recordDeliveryTime(configKey, messageType, deliveryTimeMs);
-                    LOGGER.fine("Config '" + configKey + "' delivered in " + deliveryTimeMs + "ms");
+                    metrics.recordDeliveryTime(deliveryTimeMs);
+                    LOGGER.fine("Config delivered in " + deliveryTimeMs + "ms");
                 } catch (Exception e) {
                     LOGGER.warning("Failed to parse timestamp: " + message.timestamp);
                 }

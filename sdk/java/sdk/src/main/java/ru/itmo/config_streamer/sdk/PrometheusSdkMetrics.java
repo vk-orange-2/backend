@@ -5,6 +5,7 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -13,37 +14,38 @@ import java.util.concurrent.TimeUnit;
  */
 class PrometheusSdkMetrics implements SdkMetrics {
     
-    private final Counter messagesReceivedCounter;
+    private final MeterRegistry registry;
     private final Counter connectionErrorsCounter;
-    private final Timer tokenFetchTimer;
     private final Timer deliveryTimeTimer;
+    private final Timer tokenFetchTimer;
     
     // Use AtomicLong for gauge backing
     private final java.util.concurrent.atomic.AtomicLong activeConnections = new java.util.concurrent.atomic.AtomicLong(0);
     private final java.util.concurrent.atomic.AtomicLong cacheSize = new java.util.concurrent.atomic.AtomicLong(0);
 
     PrometheusSdkMetrics(MeterRegistry registry) {
-        // Messages received counter
-        this.messagesReceivedCounter = Counter.builder("sdk_messages_received_total")
-                .description("Total number of messages received from Centrifugo")
-                .tags("config_key", "unknown", "message_type", "unknown")
-                .register(registry);
+        this.registry = registry;
 
         // Connection errors counter
         this.connectionErrorsCounter = Counter.builder("sdk_connection_errors_total")
                 .description("Total number of connection errors")
                 .register(registry);
 
-        // Token fetch timer
-        this.tokenFetchTimer = Timer.builder("sdk_token_fetch_duration_seconds")
-                .description("Time to fetch JWT tokens from config server")
-                .tags("token_type", "unknown")
-                .register(registry);
-
-        // Delivery time timer
+        // Delivery time timer with histogram buckets for Prometheus
+        // publishPercentileHistogram() creates _bucket metrics for histogram_quantile()
         this.deliveryTimeTimer = Timer.builder("sdk_config_delivery_time_seconds")
                 .description("Time from server publishing config to SDK receiving it")
-                .tags("config_key", "unknown", "message_type", "unknown")
+                .publishPercentileHistogram()
+                .minimumExpectedValue(Duration.ofMillis(1))
+                .maximumExpectedValue(Duration.ofSeconds(10))
+                .register(registry);
+
+        // Token fetch timer with histogram buckets
+        this.tokenFetchTimer = Timer.builder("sdk_token_fetch_duration_seconds")
+                .description("Time to fetch JWT tokens from config server")
+                .publishPercentileHistogram()
+                .minimumExpectedValue(Duration.ofMillis(1))
+                .maximumExpectedValue(Duration.ofSeconds(30))
                 .register(registry);
 
         // Active connections gauge
@@ -58,13 +60,17 @@ class PrometheusSdkMetrics implements SdkMetrics {
     }
 
     @Override
-    public void recordDeliveryTime(String configKey, String messageType, long deliveryTimeMs) {
+    public void recordDeliveryTime(long deliveryTimeMs) {
         deliveryTimeTimer.record(deliveryTimeMs, TimeUnit.MILLISECONDS);
     }
 
     @Override
-    public void incrementMessagesReceived(String configKey, String messageType) {
-        messagesReceivedCounter.increment();
+    public void incrementMessagesReceived(String messageType) {
+        Counter.builder("sdk_messages_received_total")
+                .description("Total number of messages received from Centrifugo")
+                .tag("message_type", messageType)
+                .register(registry)
+                .increment();
     }
 
     @Override
@@ -84,6 +90,9 @@ class PrometheusSdkMetrics implements SdkMetrics {
 
     @Override
     public void recordTokenFetchDuration(String tokenType, long durationMs) {
+        // For token type differentiation, we use tags but need a cached timer approach
+        // Since tokenType varies (connection, subscription), we use the base timer
+        // If you need per-type metrics, we can add separate timers
         tokenFetchTimer.record(durationMs, TimeUnit.MILLISECONDS);
     }
 
