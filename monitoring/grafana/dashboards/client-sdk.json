@@ -5,8 +5,8 @@
     "name": "adqhpjr",
     "namespace": "default",
     "uid": "e6541d90-a65e-41e9-a656-014ca96e1dfc",
-    "resourceVersion": "1780256907274983",
-    "generation": 12,
+    "resourceVersion": "1780343154198002",
+    "generation": 14,
     "creationTimestamp": "2026-05-31T18:21:23Z",
     "labels": {
       "grafana.app/deprecatedInternalID": "3006039909691392"
@@ -14,9 +14,15 @@
     "annotations": {
       "grafana.app/createdBy": "user:cfn1cn1a1urk0b",
       "grafana.app/folder": "efn1cn3xwyha8c",
+      "grafana.app/managedBy": "classic-file-provisioning",
+      "grafana.app/managerAllowsEdits": "true",
+      "grafana.app/managerId": "config-platform",
       "grafana.app/saved-from-ui": "Grafana v13.0.1+security-01 (9bbe672d)",
+      "grafana.app/sourceChecksum": "399d3c035329aa48deb4d34a4a8afd26",
+      "grafana.app/sourcePath": "/var/lib/grafana/dashboards/client-sdk.json",
+      "grafana.app/sourceTimestamp": "1780256956000",
       "grafana.app/updatedBy": "user:cfn1cn1a1urk0b",
-      "grafana.app/updatedTimestamp": "2026-05-31T19:48:27Z",
+      "grafana.app/updatedTimestamp": "2026-06-01T19:45:54Z",
       "grafana.app/folderTitle": "Config Platform",
       "grafana.app/folderUrl": "/dashboards/f/efn1cn3xwyha8c/config-platform"
     }
@@ -474,7 +480,7 @@
                       "spec": {
                         "editorMode": "builder",
                         "expr": "sum(rate(sdk_messages_received_total[5m]))",
-                        "legendFormat": "__auto",
+                        "legendFormat": "Total",
                         "range": true
                       }
                     },
@@ -496,7 +502,7 @@
                         "editorMode": "code",
                         "expr": "sum(rate(sdk_messages_received_total{message_type=\"update\"}[5m]))",
                         "instant": false,
-                        "legendFormat": "__auto",
+                        "legendFormat": "Update",
                         "range": true
                       }
                     },
@@ -518,11 +524,11 @@
                         "editorMode": "code",
                         "expr": "sum(rate(sdk_messages_received_total{message_type=\"config_deleted\"}[5m]))",
                         "instant": false,
-                        "legendFormat": "__auto",
+                        "legendFormat": "Config Deleted",
                         "range": true
                       }
                     },
-                    "refId": "C",
+                    "refId": "Config Deleted",
                     "hidden": false
                   }
                 },
@@ -540,11 +546,11 @@
                         "editorMode": "code",
                         "expr": "sum(rate(sdk_messages_received_total{message_type=\"unknown\"}[5m]))",
                         "instant": false,
-                        "legendFormat": "__auto",
+                        "legendFormat": "Unknown",
                         "range": true
                       }
                     },
-                    "refId": "D",
+                    "refId": "Unknown",
                     "hidden": false
                   }
                 },
@@ -562,11 +568,11 @@
                         "editorMode": "code",
                         "expr": "sum(rate(sdk_messages_received_total{message_type=\"canary_deploy\"}[5m]))",
                         "instant": false,
-                        "legendFormat": "__auto",
+                        "legendFormat": "Canary Deploy",
                         "range": true
                       }
                     },
-                    "refId": "E",
+                    "refId": "Canary Deploy",
                     "hidden": false
                   }
                 },
@@ -584,7 +590,7 @@
                         "editorMode": "code",
                         "expr": "sum(rate(sdk_messages_received_total{message_type=\"gradual_deploy\"}[5m]))",
                         "instant": false,
-                        "legendFormat": "__auto",
+                        "legendFormat": "Gradual Deploy",
                         "range": true
                       }
                     },
@@ -702,7 +708,7 @@
                       "spec": {
                         "editorMode": "code",
                         "expr": "histogram_quantile(0.50, sum(rate(sdk_config_delivery_time_seconds_bucket[5m])) by (le))",
-                        "legendFormat": "__auto",
+                        "legendFormat": "p50",
                         "range": true
                       }
                     },
@@ -724,7 +730,7 @@
                         "editorMode": "code",
                         "expr": "histogram_quantile(0.95, sum(rate(sdk_config_delivery_time_seconds_bucket[5m])) by (le))",
                         "instant": false,
-                        "legendFormat": "__auto",
+                        "legendFormat": "p95",
                         "range": true
                       }
                     },
@@ -746,7 +752,7 @@
                         "editorMode": "code",
                         "expr": "histogram_quantile(0.99, sum(rate(sdk_config_delivery_time_seconds_bucket[5m])) by (le))",
                         "instant": false,
-                        "legendFormat": "__auto",
+                        "legendFormat": "p99",
                         "range": true
                       }
                     },
