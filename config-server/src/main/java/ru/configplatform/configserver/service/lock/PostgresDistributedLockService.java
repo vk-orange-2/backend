@@ -4,6 +4,9 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
+import org.springframework.dao.DataAccessException;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -14,6 +17,11 @@ public class PostgresDistributedLockService implements DistributedLockService {
     @PersistenceContext
     private EntityManager entityManager;
 
+    @Retryable(
+            retryFor = DataAccessException.class,
+            maxAttempts = 3,
+            backoff = @Backoff(delay = 500)
+    )
     @Override
     public void acquireTransactionLock(String lockKey) {
         log.debug("Acquiring advisory lock for key: {}", lockKey);

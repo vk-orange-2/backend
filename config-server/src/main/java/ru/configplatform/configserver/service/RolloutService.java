@@ -3,9 +3,15 @@ package ru.configplatform.configserver.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Recover;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.*;
@@ -39,6 +45,7 @@ public class RolloutService {
     private final DiffService diffService;
     private final ObjectMapper objectMapper;
     private final DeliveryMetrics deliveryMetrics;
+    private final ObservationRegistry observationRegistry;
 
     /**
      * Создать и запустить rollout.
@@ -49,6 +56,10 @@ public class RolloutService {
      * Для canary  — публикуем canary_deploy в основной канал, статус completed
      *               (canary "стоит" на месте, пока не будет promote или rollback)
      */
+    @Observed(
+            name = "rollout.create",
+            contextualName = "create-rollout"
+    )
     @Transactional
     public RolloutResponse createAndStart(CreateRolloutRequest request, RequestContext ctx) {
         ConfigEntity config = findActiveConfig(request.getConfigId());
@@ -284,6 +295,10 @@ public class RolloutService {
     /**
      * Получить rollout по ID
      */
+    @Observed(
+            name = "rollout.get_by_id",
+            contextualName = "get-rollout-by-id"
+    )
     @Transactional(readOnly = true)
     public RolloutResponse getById(UUID rolloutId) {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
@@ -295,6 +310,10 @@ public class RolloutService {
     /**
      * Список rollout-ов для конфига
      */
+    @Observed(
+            name = "rollout.get_by_config_id",
+            contextualName = "get-rollouts"
+    )
     @Transactional(readOnly = true)
     public List<RolloutResponse> getByConfigId(UUID configId) {
         ConfigEntity config = findActiveConfig(configId);
@@ -308,6 +327,10 @@ public class RolloutService {
      * Получить все активные rollout-ы для service+environment.
      * Используется SDK при реконнекте/старте — один запрос вместо N.
      */
+    @Observed(
+            name = "rollout.get_active",
+            contextualName = "get-active-rollouts"
+    )
     @Transactional(readOnly = true)
     public List<RolloutResponse> getActiveByServiceAndEnvironment(String serviceName, String envCode) {
         return rolloutRepository.findActiveByServiceAndEnvironment(serviceName, envCode)
@@ -320,6 +343,10 @@ public class RolloutService {
      * Остановить rollout
      * Останавливает дальнейшее распространение без изменения глобальной версии
      */
+    @Observed(
+            name = "rollout.stop",
+            contextualName = "stop-rollout"
+    )
     @Transactional
     public RolloutResponse stop(UUID rolloutId, RequestContext ctx) {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
@@ -349,6 +376,10 @@ public class RolloutService {
     /**
      * Rollback rollout (FR-52, AR-28)
      */
+    @Observed(
+            name = "rollout.rollback",
+            contextualName = "rollback-rollout"
+    )
     @Transactional
     public RolloutResponse rollback(UUID rolloutId, RollbackRolloutRequest request, RequestContext ctx) {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
@@ -396,6 +427,10 @@ public class RolloutService {
      * This is the replacement for ConfigService.rollback — it publishes to Centrifugo
      * so SDK is notified.
      */
+    @Observed(
+            name = "rollout.rollback.config",
+            contextualName = "rollback-config"
+    )
     @Transactional
     public RolloutResponse rollbackConfig(UUID configId, RollbackRequest request,
                                           RequestContext ctx) {
@@ -496,6 +531,10 @@ public class RolloutService {
     /**
      * Выполнить следующий deployment для gradual rollout (вызывается scheduler-ом или вручную)
      */
+    @Observed(
+            name = "rollout.deploy.next",
+            contextualName = "deploy-next"
+    )
     @Transactional
     public RolloutResponse deployNext(UUID rolloutId, RequestContext ctx) {
         RolloutEntity rollout = rolloutRepository.findById(rolloutId)
@@ -540,64 +579,82 @@ public class RolloutService {
     }
 
     /**
-     * Проверяет, есть ли активный rollout для данного конфига
-     */
-    @Transactional(readOnly = true)
-    public boolean hasActiveRollout(UUID configId) {
-        return rolloutRepository.findActiveByConfigId(configId).isPresent();
-    }
-
-    /**
      * Вызывается scheduler-ом для продвижения всех готовых gradual rollout-ов
      */
+    @Observed(
+            name = "rollout.scheduler.process",
+            contextualName = "process-scheduled-rollouts"
+    )
     @Transactional
     public void processScheduledDeployments() {
         List<RolloutEntity> ready = rolloutRepository.findReadyForNextDeployment(Instant.now());
         for (RolloutEntity rollout : ready) {
             try {
-                ConfigEntity config = rollout.getConfig();
-
-                // Skip if config was deleted
-                if (!config.isActive()) {
-                    log.warn("Skipping deployment for rollout {} — config {} is deleted", rollout.getId(), config.getId());
-                    rollout.markStopped();
-                    rolloutRepository.save(rollout);
-                    continue;
-                }
-
-                String serviceName = config.getService().getName();
-                String envCode = config.getEnvironment().getCode();
-                String key = config.getConfigKey();
-
-                ConfigVersionEntity targetVersionEntity = configVersionRepository
-                        .findByConfigIdAndVersion(config.getId(), rollout.getTargetVersion())
-                        .orElse(null);
-
-                if (targetVersionEntity == null) {
-                    log.error("Target version {} not found for rollout {}", rollout.getTargetVersion(), rollout.getId());
-                    continue;
-                }
-
-                Object payload = deserializePayload(targetVersionEntity.getPayload());
-                executeNextDeployment(rollout, config, serviceName, envCode, key,
-                        rollout.getTargetVersion(), payload);
-                rolloutRepository.save(rollout);
-
-                if (rollout.getStatus() == RolloutStatus.COMPLETED) {
-                    RequestContext systemCtx = RequestContext.builder()
-                            .actor("system-scheduler")
-                            .build();
-                    auditService.log(config, "ROLLOUT_COMPLETE", rollout.getBaselineVersion(),
-                            rollout.getTargetVersion(),
-                            serializePayload(Map.of(
-                                    "rolloutId", rollout.getId().toString(),
-                                    "totalDeployments", rollout.getTotalDeployments()
-                            )), systemCtx);
-                }
+                processSingleRolloutWithRetry(rollout);
             } catch (Exception e) {
                 log.error("Failed to process deployment for rollout {}", rollout.getId(), e);
             }
         }
+    }
+
+    @Retryable(
+            retryFor = RuntimeException.class,
+            maxAttempts = 2,
+            backoff = @Backoff(
+                    delay = 1000,
+                    multiplier = 2
+            )
+    )
+    @Transactional
+    private void processSingleRolloutWithRetry(RolloutEntity rollout) {
+        ConfigEntity config = rollout.getConfig();
+
+        // Skip if config was deleted
+        if (!config.isActive()) {
+            log.warn("Skipping deployment for rollout {} — config {} is deleted", rollout.getId(), config.getId());
+            rollout.markStopped();
+            rolloutRepository.save(rollout);
+            return;
+        }
+
+        String serviceName = config.getService().getName();
+        String envCode = config.getEnvironment().getCode();
+        String key = config.getConfigKey();
+
+        ConfigVersionEntity targetVersionEntity = configVersionRepository
+                .findByConfigIdAndVersion(config.getId(), rollout.getTargetVersion())
+                .orElse(null);
+
+        if (targetVersionEntity == null) {
+            log.error("Target version {} not found for rollout {}", rollout.getTargetVersion(), rollout.getId());
+            return;
+        }
+
+        Object payload = deserializePayload(targetVersionEntity.getPayload());
+        executeNextDeployment(rollout, config, serviceName, envCode, key,
+                rollout.getTargetVersion(), payload);
+        rolloutRepository.save(rollout);
+
+        if (rollout.getStatus() == RolloutStatus.COMPLETED) {
+            RequestContext systemCtx = RequestContext.builder()
+                    .actor("system-scheduler")
+                    .build();
+            auditService.log(config, "ROLLOUT_COMPLETE", rollout.getBaselineVersion(),
+                    rollout.getTargetVersion(),
+                    serializePayload(Map.of(
+                            "rolloutId", rollout.getId().toString(),
+                            "totalDeployments", rollout.getTotalDeployments()
+                    )), systemCtx);
+        }
+    }
+
+    @Recover
+    public void recover(RuntimeException ex, RolloutEntity rollout) {
+        log.error(
+                "Rollout {} failed after retries",
+                rollout.getId(),
+                ex
+        );
     }
 
     private ConfigEntity findActiveConfig(UUID configId) {
@@ -756,7 +813,13 @@ public class RolloutService {
 
         Timer.Sample sample = deliveryMetrics.startEnqueueTimer();
         try {
-            centrifugoOutboxRepository.save(outbox);
+            Observation.createNotStarted(
+                    "centrifugo.outbox.publish",
+                    observationRegistry
+            )
+            .observe(() -> {
+                centrifugoOutboxRepository.save(outbox);
+            });
             deliveryMetrics.markEnqueueSuccess(sample);
         } catch (DataIntegrityViolationException e) {
             // Идемпотентность: запись с таким ключом уже существует

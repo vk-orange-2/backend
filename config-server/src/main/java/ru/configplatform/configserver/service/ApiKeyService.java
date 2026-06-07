@@ -11,6 +11,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -100,6 +101,10 @@ public class ApiKeyService {
      * Validates API key and returns service/env info if valid.
      * Shared validation logic for both connection and subscription JWT generation.
      */
+    @Observed(
+            name = "apikey.validate",
+            contextualName = "validate-api-key"
+    )
     private ValidatedApiKey validateApiKey(String apiKeyValue, UUID serviceId, short environmentId) {
         var apiKeyId = new ApiKeyId(serviceId, environmentId);
         var apiKeyOpt = repo.findById(apiKeyId);
@@ -126,6 +131,10 @@ public class ApiKeyService {
      * Generates a connection JWT token without channel claim.
      * Used for establishing Centrifugo connection.
      */
+    @Observed(
+            name = "apikey.connection.jwt",
+            contextualName = "generate-connection-jwt"
+    )
     public String getConnectionJwt(String apiKeyValue, UUID serviceId, short environmentId, String instanceName) {
         ValidatedApiKey validated = validateApiKey(apiKeyValue, serviceId, environmentId);
         if (validated == null) {
@@ -154,6 +163,10 @@ public class ApiKeyService {
      * @param instanceName  the instance name (can be null)
      * @return JWT token string, or null if validation fails
      */
+    @Observed(
+            name = "apikey.subscription.jwt",
+            contextualName = "generate-subscription-jwt"
+    )
     public String getSubscriptionJwt(String apiKeyValue, UUID serviceId, short environmentId, String instanceName) {
         ValidatedApiKey validated = validateApiKey(apiKeyValue, serviceId, environmentId);
         if (validated == null) {
@@ -180,6 +193,10 @@ public class ApiKeyService {
     private record ValidatedApiKey(String serviceName, String envCode) {
     }
 
+    @Observed(
+            name = "apikey.get",
+            contextualName = "get-api-key"
+    )
     public String getApiKey(UUID serviceId, short environmentId) {
         var apiKeyId = new ApiKeyId(serviceId, environmentId);
         var apiKeyOpt = repo.findById(apiKeyId);
@@ -191,6 +208,10 @@ public class ApiKeyService {
         return buildApiKeyClientValue(serviceId, environmentId, decrypt(apiKeyOpt.get().getValue()));
     }
 
+    @Observed(
+            name = "apikey.create.reset",
+            contextualName = "create-or-reset-api-key"
+    )
     public String createOrResetApiKey(UUID serviceId, short environmentId) {
         var newValue = UUID.randomUUID().toString();
 

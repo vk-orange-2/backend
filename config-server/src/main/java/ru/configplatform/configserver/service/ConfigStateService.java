@@ -2,6 +2,7 @@ package ru.configplatform.configserver.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,6 +43,10 @@ public class ConfigStateService {
      * 3. gradualRollout — active gradual rollout (in_progress)
      * 4. canary — active canary deployment (completed canary rollout)
      */
+    @Observed(
+            name = "config.state",
+            contextualName = "build-config-state"
+    )
     @Transactional(readOnly = true)
     public ConfigStateResponse getServiceEnvState(String serviceName, String envCode) {
         ServiceEntity service = serviceRepository.findByName(serviceName).orElse(null);

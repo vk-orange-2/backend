@@ -8,6 +8,7 @@ import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -22,9 +23,12 @@ public class RequestLoggingFilter implements Filter {
 
         HttpServletRequest httpRequest = (HttpServletRequest) request;
 
-        log.info("request: {} {}",
+        log.info(
+                "Request {} {} traceId={}",
                 httpRequest.getMethod(),
-                httpRequest.getRequestURI());
+                httpRequest.getRequestURI(),
+                MDC.get("traceId")
+        );
 
         chain.doFilter(request, response);
     }

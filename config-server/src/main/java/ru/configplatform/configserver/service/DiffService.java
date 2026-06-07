@@ -3,6 +3,7 @@ package ru.configplatform.configserver.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import ru.configplatform.configserver.dto.DiffResponse;
@@ -23,6 +24,10 @@ public class DiffService {
 
     private final ObjectMapper objectMapper;
 
+    @Observed(
+            name = "diff.compute",
+            contextualName = "compute-diff"
+    )
     public DiffResponse computeDiff(String oldJson, String newJson, long versionFrom, long versionTo) {
         Map<String, Object> oldMap = toFlatMap(oldJson);
         Map<String, Object> newMap = toFlatMap(newJson);
@@ -65,6 +70,10 @@ public class DiffService {
                 .build();
     }
 
+    @Observed(
+            name = "diff.serialize",
+            contextualName = "serialize-diff"
+    )
     public String serializeDiff(DiffResponse diff) {
         try {
             return objectMapper.writeValueAsString(diff);
