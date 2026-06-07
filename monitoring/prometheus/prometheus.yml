@@ -14,3 +14,10 @@ scrape_configs:
     static_configs:
       - targets:
           - centrifugo:8000
+
+  - job_name: client-sdk
+    metrics_path: /actuator/prometheus
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/*.json
+        refresh_interval: 5s

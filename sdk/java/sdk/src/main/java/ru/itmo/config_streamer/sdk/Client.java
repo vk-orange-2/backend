@@ -6,6 +6,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -26,7 +27,6 @@ import ru.itmo.config_streamer.sdk.dto.CentrifugoMessage;
 import ru.itmo.config_streamer.sdk.dto.ConfigStateResponse;
 import ru.itmo.config_streamer.sdk.dto.ConfigStateResponse.ConfigStateEntry;
 import ru.itmo.config_streamer.sdk.dto.ConfigStateResponse.GradualRolloutState;
-import ru.itmo.config_streamer.sdk.dto.ConfigStateResponse.CanaryState;
 
 /**
  * Main client for receiving configuration updates via Centrifugo WebSocket.
@@ -56,18 +56,33 @@ public class Client {
     private final TokenFetcher tokenFetcher;
     private final GradualRolloutManager gradualRolloutManager;
     private final CentrifugoManager centrifugoManager;
+    private final SdkMetrics metrics;
 
     /**
-     * Creates a new Client instance.
+     * Creates a new Client instance with default options (metrics disabled).
      *
      * @param baseUrl the base URL of the config server (e.g., "http://localhost:8080")
      * @param apiKey  the full API key in format "serviceId:environmentId:keyValue"
      */
     public Client(final String baseUrl, final String apiKey) {
+        this(baseUrl, apiKey, ClientOptions.defaults());
+    }
+
+    /**
+     * Creates a new Client instance with specified options.
+     *
+     * @param baseUrl the base URL of the config server (e.g., "http://localhost:8080")
+     * @param apiKey  the full API key in format "serviceId:environmentId:keyValue"
+     * @param options the client options
+     */
+    public Client(final String baseUrl, final String apiKey, final ClientOptions options) {
         this.baseUrl = baseUrl;
         this.httpClient = HttpClient.newHttpClient();
         this.objectMapper = new ObjectMapper();
         this.instanceName = UUID.randomUUID().toString();
+        this.metrics = options != null && options.getMeterRegistry() != null 
+                ? SdkMetrics.withRegistry(options.getMeterRegistry()) 
+                : SdkMetrics.noOp();
 
         // Parse API key: format is "serviceId:environmentId:keyValue"
         String[] parts = apiKey.split(":", 3);
@@ -108,6 +123,8 @@ public class Client {
      * Subscribes to centrifugo websocket channel and starts receiving updates.
      */
     public void run() {
+        metrics.incrementActiveConnections();
+
         String connectionToken = fetchConnectionTokenSafely();
         String subscriptionToken = fetchSubscriptionTokenSafely();
 
@@ -131,25 +148,48 @@ public class Client {
     }
 
     /**
+     * Gets the instance name of this client.
+     *
+     * @return the unique instance name
+     */
+    public String getInstanceName() {
+        return instanceName;
+    }
+
+    /**
      * Shuts down the client and disconnects from Centrifugo.
      */
     public void shutdown() {
+        metrics.decrementActiveConnections();
+
         if (centrifugoManager != null) {
             centrifugoManager.disconnect();
         }
     }
 
     private String fetchConnectionTokenSafely() {
+        long start = System.currentTimeMillis();
         String token = tokenFetcher.fetchConnectionToken();
+        long duration = System.currentTimeMillis() - start;
+
+        metrics.recordTokenFetchDuration("connection", duration);
+
         if (token == null) {
+            metrics.incrementConnectionErrors();
             throw new RuntimeException("Failed to obtain connection JWT token. Check API key and server availability.");
         }
         return token;
     }
 
     private String fetchSubscriptionTokenSafely() {
+        long start = System.currentTimeMillis();
         String token = tokenFetcher.fetchSubscriptionToken();
+        long duration = System.currentTimeMillis() - start;
+
+        metrics.recordTokenFetchDuration("subscription", duration);
+        
         if (token == null) {
+            metrics.incrementConnectionErrors();
             throw new RuntimeException("Failed to obtain subscription JWT token. Check API key and server availability.");
         }
         return token;
@@ -245,6 +285,7 @@ public class Client {
                         configCache.put(entry.configKey, config);
                         LOGGER.info("Initialized config '" + entry.configKey + "' to version " + config.version());
                     }
+                    metrics.setCacheSize(configCache.size());
                 }
             } finally {
                 cacheLock.writeLock().unlock();
@@ -319,6 +360,23 @@ public class Client {
                 case "config_deleted" -> handleConfigDeleted(message);
                 case "update" -> handleConfigUpdate(message);
                 default -> LOGGER.warning("Unknown message type: " + message.type);
+            }
+
+            // Record metrics
+            String messageType = message.type != null ? message.type : "unknown";
+
+            metrics.incrementMessagesReceived(messageType);
+
+            // Record delivery time if timestamp is present
+            if (message.timestamp != null) {
+                try {
+                    long deliveryTimeMs = System.currentTimeMillis() - 
+                        Instant.parse(message.timestamp).toEpochMilli();
+                    metrics.recordDeliveryTime(deliveryTimeMs);
+                    LOGGER.fine("Config delivered in " + deliveryTimeMs + "ms");
+                } catch (Exception e) {
+                    LOGGER.warning("Failed to parse timestamp: " + message.timestamp);
+                }
             }
         } catch (Exception e) {
             LOGGER.log(Level.SEVERE, "Error handling publication", e);
@@ -410,7 +468,10 @@ public class Client {
 
             if (currentConfig == null || newVersion > currentConfig.version()) {
                 newConfig = new Config(key, newVersion, message.payload);
+
                 configCache.put(key, newConfig);
+                metrics.setCacheSize(configCache.size());
+
                 LOGGER.info("Updated config '" + key + "' to version " + newVersion);
             } else {
                 LOGGER.fine("Ignoring outdated config '" + key + "' version " + newVersion);
@@ -457,5 +518,4 @@ public class Client {
         }
         configsToNotify.forEach(this::notifyCallbacks);
     }
-
 }

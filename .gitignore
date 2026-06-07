@@ -93,3 +93,8 @@ nb-configuration.xml
 ## Environment
 ##############################
 *.env
+
+##############################
+## Load tests
+##############################
+load-test-report.html

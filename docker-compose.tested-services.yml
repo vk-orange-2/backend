@@ -1,0 +1,13 @@
+services:
+  tested-service:
+    build:
+      context: ./tested-service
+      dockerfile: Dockerfile
+    environment:
+      SDK_TEST_API_KEY: ${SDK_TEST_API_KEY}
+      SERVER_PORT: 8090
+      CONFIG_STREAMER_BASE_URL: http://host.docker.internal:8080
+    ports:
+      - "8091-8094:8090"
+    deploy:
+      replicas: 4
