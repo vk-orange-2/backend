@@ -25,8 +25,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -476,5 +475,49 @@ class ConfigControllerTest {
 
         return objectMapper.readTree(result.getResponse().getContentAsString())
                 .get("id").asText();
+    }
+
+    @Test
+    void shouldReturn429WhenUserLimitExceeded()
+            throws Exception {
+
+        var request =
+                CreateConfigRequest.builder()
+                        .service("svc")
+                        .env("dev")
+                        .key(UUID.randomUUID().toString())
+                        .value(Map.of("a",1));
+
+        for (int i = 0; i < 10; i++) {
+            mockMvc.perform(
+                    post("/v1/configs")
+                            .header("X-Author","ivan")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(
+                                    objectMapper.writeValueAsString(
+                                            request
+                                                    .expectedVersion((long)i)
+                                                    .build()
+                                    )
+                            )
+            );
+        }
+
+        mockMvc.perform(
+                post("/v1/configs")
+                        .header("X-Author","ivan")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(
+                                objectMapper.writeValueAsString(
+                                        request
+                                                .expectedVersion(10L)
+                                                .build()
+                                )
+                        )
+                )
+                .andExpect(status().isTooManyRequests())
+                .andExpect(
+                        header().exists("Retry-After")
+                );
     }
 }

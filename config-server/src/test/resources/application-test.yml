@@ -29,3 +29,19 @@ config_platform:
 
 scheduler:
   enabled: false
+
+rate-limit:
+  user:
+    write:
+      rate: 0
+      burst: 10
+    read:
+      rate: 0
+      burst: 10
+  service-account:
+    write:
+      rate: 0
+      burst: 10
+    read:
+      rate: 0
+      burst: 10
