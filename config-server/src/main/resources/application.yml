@@ -26,7 +26,7 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
-        generate_statistics: true
+        generate_statistics: false
         jdbc:
           batch_size: 20
 
@@ -75,7 +75,7 @@ management:
   tracing:
     enabled: true
     sampling:
-      probability: 1.0
+      probability: 0.01
     propagation:
       type: B3
 
@@ -87,7 +87,7 @@ management:
         requests-name: true
     jdbc:
       queries:
-        enabled: true
+        enabled: false
 
   zipkin:
     tracing:
@@ -96,16 +96,14 @@ management:
 logging:
   pattern:
     level: "%5p [${spring.application.name:},traceId=%X{traceId},spanId=%X{spanId}]"
-
   level:
-    org.hibernate.SQL: DEBUG
-    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
-    org.springframework.transaction.interceptor: TRACE
+    org.hibernate.SQL: WARN
+    org.hibernate.type.descriptor.sql.BasicBinder: WARN
+    org.springframework.transaction.interceptor: WARN
 
 decorator:
   datasource:
     enabled: true
     query:
-      log-level: INFO
-      enable-observability: true
-
+      log-level: OFF
+      enable-observability: false
