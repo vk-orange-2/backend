@@ -34,6 +34,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Transactional
 class RolloutControllerTest {
 
+    private static final String TEST_AUTHOR = "test-user";
+    private static final String TEST_SERVICE_ACCOUNT = "test-service";
+
     @Autowired
     private MockMvc mockMvc;
     @Autowired
@@ -75,6 +78,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
@@ -92,7 +96,7 @@ class RolloutControllerTest {
                 .andExpect(jsonPath("$.type", is("gradual")))
                 .andExpect(jsonPath("$.status", is("in_progress")))
                 .andExpect(jsonPath("$.totalDeployments", is(4)))
-                .andExpect(jsonPath("$.currentDeployment", is(1)))  // первый deployment сразу
+                .andExpect(jsonPath("$.currentDeployment", is(1)))
                 .andExpect(jsonPath("$.baselineVersion", is(1)))
                 .andExpect(jsonPath("$.targetVersion", is(2)));
     }
@@ -108,13 +112,14 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
                 .configId(UUID.fromString(configId))
                 .type("gradual")
                 .totalDeployments(3)
-                .deploymentIntervalSeconds(0) // без задержки для теста
+                .deploymentIntervalSeconds(0)
                 .build();
 
         MvcResult result = mockMvc.perform(post("/v1/rollouts")
@@ -127,14 +132,12 @@ class RolloutControllerTest {
         String rolloutId = objectMapper.readTree(result.getResponse().getContentAsString())
                 .get("id").asText();
 
-        // Deployment 2
         mockMvc.perform(post("/v1/rollouts/" + rolloutId + "/deploy-next")
                         .header("X-Author", "deployer"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.currentDeployment", is(2)))
                 .andExpect(jsonPath("$.status", is("in_progress")));
 
-        // Deployment 3 (last)
         mockMvc.perform(post("/v1/rollouts/" + rolloutId + "/deploy-next")
                         .header("X-Author", "deployer"))
                 .andExpect(status().isOk())
@@ -153,6 +156,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
@@ -176,7 +180,7 @@ class RolloutControllerTest {
                         .header("X-Author", "admin"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status", is("stopped")))
-                .andExpect(jsonPath("$.currentDeployment", is(1)));  // остановили после 1-го
+                .andExpect(jsonPath("$.currentDeployment", is(1)));
     }
 
     @Test
@@ -191,6 +195,7 @@ class RolloutControllerTest {
 
         MvcResult result = mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isCreated())
                 .andReturn();
@@ -198,7 +203,8 @@ class RolloutControllerTest {
         String rolloutId = objectMapper.readTree(result.getResponse().getContentAsString())
                 .get("id").asText();
 
-        mockMvc.perform(post("/v1/rollouts/" + rolloutId + "/stop"))
+        mockMvc.perform(post("/v1/rollouts/" + rolloutId + "/stop")
+                        .header("X-Author", "admin"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code", is("ROLLOUT_NOT_ACTIVE")));
     }
@@ -214,6 +220,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
@@ -233,20 +240,19 @@ class RolloutControllerTest {
         String rolloutId = objectMapper.readTree(result.getResponse().getContentAsString())
                 .get("id").asText();
 
-        // Rollback rollout
         mockMvc.perform(post("/v1/rollouts/" + rolloutId + "/rollback")
                         .header("X-Author", "admin"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status", is("rolled_back")));
 
-        // Конфиг должен вернуться к baseline (version 1, original payload)
-        mockMvc.perform(get("/v1/configs/" + configId))
+        mockMvc.perform(get("/v1/configs/" + configId)
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.currentVersion", is(3)))  // новая версия после rollback
+                .andExpect(jsonPath("$.currentVersion", is(3)))
                 .andExpect(jsonPath("$.latestVersion.payload.original", is(true)));
 
-        // Проверяем, что создалась новая версия
-        mockMvc.perform(get("/v1/configs/" + configId + "/versions"))
+        mockMvc.perform(get("/v1/configs/" + configId + "/versions")
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(jsonPath("$.versions", hasSize(3)))
                 .andExpect(jsonPath("$.versions[0].changeType", is("rollback")));
     }
@@ -263,6 +269,7 @@ class RolloutControllerTest {
 
         MvcResult result = mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isCreated())
                 .andReturn();
@@ -270,7 +277,8 @@ class RolloutControllerTest {
         String rolloutId = objectMapper.readTree(result.getResponse().getContentAsString())
                 .get("id").asText();
 
-        mockMvc.perform(post("/v1/rollouts/" + rolloutId + "/rollback"))
+        mockMvc.perform(post("/v1/rollouts/" + rolloutId + "/rollback")
+                        .header("X-Author", "admin"))
                 .andExpect(status().isConflict());
     }
 
@@ -285,9 +293,9 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update1)));
 
-        // Создаём gradual rollout
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
                 .configId(UUID.fromString(configId))
                 .type("gradual")
@@ -297,16 +305,17 @@ class RolloutControllerTest {
 
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isCreated());
 
-        // Попытка обновить конфиг — должна быть заблокирована
         UpdateConfigRequest update2 = UpdateConfigRequest.builder()
                 .value(Map.of("v", 3))
                 .expectedVersion(2L)
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(update2)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code", is("ACTIVE_ROLLOUT_EXISTS")));
@@ -323,6 +332,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
@@ -334,12 +344,13 @@ class RolloutControllerTest {
 
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isCreated());
 
-        // Второй rollout
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code", is("ACTIVE_ROLLOUT_EXISTS")));
@@ -357,6 +368,7 @@ class RolloutControllerTest {
 
         MvcResult result = mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isCreated())
                 .andReturn();
@@ -364,14 +376,16 @@ class RolloutControllerTest {
         String rolloutId = objectMapper.readTree(result.getResponse().getContentAsString())
                 .get("id").asText();
 
-        mockMvc.perform(get("/v1/rollouts/" + rolloutId))
+        mockMvc.perform(get("/v1/rollouts/" + rolloutId)
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id", is(rolloutId)));
     }
 
     @Test
     void shouldReturn404ForNonexistentRollout() throws Exception {
-        mockMvc.perform(get("/v1/rollouts/" + UUID.randomUUID()))
+        mockMvc.perform(get("/v1/rollouts/" + UUID.randomUUID())
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code", is("ROLLOUT_NOT_FOUND")));
     }
@@ -393,6 +407,7 @@ class RolloutControllerTest {
                 .andExpect(status().isCreated());
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "rollout-audit-svc")
                         .param("operation", "ROLLOUT_START"))
                 .andExpect(status().isOk())
@@ -412,6 +427,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
@@ -435,6 +451,7 @@ class RolloutControllerTest {
                 .header("X-Author", "admin"));
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "rollout-audit-stop-svc")
                         .param("operation", "ROLLOUT_STOP"))
                 .andExpect(status().isOk())
@@ -453,6 +470,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
@@ -476,12 +494,14 @@ class RolloutControllerTest {
                 .header("X-Author", "admin"));
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "rollout-audit-rb-svc")
                         .param("operation", "ROLLOUT_ROLLBACK"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.entries", hasSize(greaterThanOrEqualTo(1))));
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "rollout-audit-rb-svc")
                         .param("operation", "ROLLBACK"))
                 .andExpect(status().isOk())
@@ -500,6 +520,7 @@ class RolloutControllerTest {
 
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isBadRequest());
     }
@@ -514,6 +535,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
@@ -524,10 +546,12 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isCreated());
 
         mockMvc.perform(get("/v1/rollouts/active")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "rollout-active-svc")
                         .param("environment", "dev"))
                 .andExpect(status().isOk())
@@ -544,6 +568,7 @@ class RolloutControllerTest {
                 Map.of("v", 1));
 
         mockMvc.perform(get("/v1/rollouts/active")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "rollout-noactive-svc")
                         .param("environment", "dev"))
                 .andExpect(status().isOk())
@@ -552,18 +577,18 @@ class RolloutControllerTest {
 
     @Test
     void shouldReturnMultipleActiveRolloutsForServiceEnv() throws Exception {
-        // Два разных конфига в одном service+env — оба с активными роллаутами
         String configId1 = createConfigAndReturnId("rollout-multi-svc", "dev", "key-1", Map.of("v", 1));
         String configId2 = createConfigAndReturnId("rollout-multi-svc", "dev", "key-2", Map.of("v", 1));
 
-        // Делаем gradual (он остаётся in_progress)
         mockMvc.perform(put("/v1/configs/" + configId1)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(
                         UpdateConfigRequest.builder().value(Map.of("v", 2)).expectedVersion(1L).build()
                 )));
         mockMvc.perform(put("/v1/configs/" + configId2)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(
                         UpdateConfigRequest.builder().value(Map.of("v", 2)).expectedVersion(1L).build()
                 )));
@@ -577,19 +602,21 @@ class RolloutControllerTest {
                     .build();
             mockMvc.perform(post("/v1/rollouts")
                             .contentType(MediaType.APPLICATION_JSON)
+                            .header("X-Author", "deployer")
                             .content(objectMapper.writeValueAsString(req)))
                     .andExpect(status().isCreated());
         }
 
-        // И ещё один rollout в ДРУГОМ окружении того же сервиса — он не должен попасть в выдачу
         String configIdProd = createConfigAndReturnId("rollout-multi-svc", "prod", "key-1", Map.of("v", 1));
         mockMvc.perform(put("/v1/configs/" + configIdProd)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(
                         UpdateConfigRequest.builder().value(Map.of("v", 2)).expectedVersion(1L).build()
                 )));
         mockMvc.perform(post("/v1/rollouts")
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", "deployer")
                 .content(objectMapper.writeValueAsString(
                         CreateRolloutRequest.builder()
                                 .configId(UUID.fromString(configIdProd))
@@ -600,6 +627,7 @@ class RolloutControllerTest {
                 )));
 
         mockMvc.perform(get("/v1/rollouts/active")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "rollout-multi-svc")
                         .param("environment", "dev"))
                 .andExpect(status().isOk())
@@ -609,9 +637,9 @@ class RolloutControllerTest {
     @Test
     void shouldNotReturnCompletedRolloutsInActiveList() throws Exception {
         String configId = createConfigAndReturnId("rollout-completed-svc", "dev", "k", Map.of("v", 1));
-        // instant сразу completed
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(
                                 CreateRolloutRequest.builder()
                                         .configId(UUID.fromString(configId))
@@ -621,6 +649,7 @@ class RolloutControllerTest {
                 .andExpect(status().isCreated());
 
         mockMvc.perform(get("/v1/rollouts/active")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "rollout-completed-svc")
                         .param("environment", "dev"))
                 .andExpect(status().isOk())
@@ -663,6 +692,7 @@ class RolloutControllerTest {
 
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(rolloutReq)))
                 .andExpect(status().isBadRequest());
     }
@@ -678,6 +708,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest rolloutReq = CreateRolloutRequest.builder()
@@ -696,14 +727,13 @@ class RolloutControllerTest {
         String rolloutId = objectMapper.readTree(result.getResponse().getContentAsString())
                 .get("id").asText();
 
-        // Rollback the canary (it's in completed state)
         mockMvc.perform(post("/v1/rollouts/" + rolloutId + "/rollback")
                         .header("X-Author", "admin"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status", is("rolled_back")));
 
-        // Config version should be incremented (rollback creates new version)
-        mockMvc.perform(get("/v1/configs/" + configId))
+        mockMvc.perform(get("/v1/configs/" + configId)
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.currentVersion", is(3)))
                 .andExpect(jsonPath("$.latestVersion.payload.original", is(true)));
@@ -720,9 +750,9 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
-        // Create canary
         CreateRolloutRequest canaryReq = CreateRolloutRequest.builder()
                 .configId(UUID.fromString(configId))
                 .type("canary")
@@ -730,17 +760,17 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canaryReq)))
                 .andExpect(status().isCreated());
 
-        // Now promote via instant (same config) → should work
-        // First need a new version
         UpdateConfigRequest update2 = UpdateConfigRequest.builder()
                 .value(Map.of("v", 3))
                 .expectedVersion(2L)
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update2)));
 
         CreateRolloutRequest instantReq = CreateRolloutRequest.builder()
@@ -749,6 +779,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(instantReq)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.type", is("instant")))
@@ -757,7 +788,6 @@ class RolloutControllerTest {
 
     @Test
     void shouldAllowCanaryOnSamePercentageForDifferentConfig() throws Exception {
-        // Config 1 with canary at 10%
         String configId1 = createConfigAndReturnId("canary-multi-svc", "dev", "key-1",
                 Map.of("v", 1));
         CreateRolloutRequest canary1 = CreateRolloutRequest.builder()
@@ -767,10 +797,10 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canary1)))
                 .andExpect(status().isCreated());
 
-        // Config 2 canary at same 10% → should work
         String configId2 = createConfigAndReturnId("canary-multi-svc", "dev", "key-2",
                 Map.of("v", 1));
         CreateRolloutRequest canary2 = CreateRolloutRequest.builder()
@@ -780,6 +810,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canary2)))
                 .andExpect(status().isCreated());
     }
@@ -795,6 +826,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canary1)))
                 .andExpect(status().isCreated());
 
@@ -807,6 +839,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canary2)))
                 .andExpect(status().isCreated());
     }
@@ -822,10 +855,10 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canary)))
                 .andExpect(status().isCreated());
 
-        // Different config, gradual → blocked
         String configId2 = createConfigAndReturnId("canary-gradblock-svc", "dev", "key-2",
                 Map.of("v", 1));
         UpdateConfigRequest update = UpdateConfigRequest.builder()
@@ -834,6 +867,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId2)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest gradual = CreateRolloutRequest.builder()
@@ -845,6 +879,7 @@ class RolloutControllerTest {
 
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(gradual)))
                 .andExpect(status().isCreated());
     }
@@ -854,7 +889,6 @@ class RolloutControllerTest {
         String configId = createConfigAndReturnId("canary-increase-svc", "dev", "key-1",
                 Map.of("v", 1));
 
-        // Canary at 5%
         CreateRolloutRequest canary1 = CreateRolloutRequest.builder()
                 .configId(UUID.fromString(configId))
                 .type("canary")
@@ -862,19 +896,19 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canary1)))
                 .andExpect(status().isCreated());
 
-        // Need new version for next canary
         UpdateConfigRequest update = UpdateConfigRequest.builder()
                 .value(Map.of("v", 2))
                 .expectedVersion(1L)
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
-        // Canary at 15% on same config → OK (higher percentage)
         CreateRolloutRequest canary2 = CreateRolloutRequest.builder()
                 .configId(UUID.fromString(configId))
                 .type("canary")
@@ -882,6 +916,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canary2)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.canaryPercentage", is(15)));
@@ -899,6 +934,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canary1)))
                 .andExpect(status().isCreated());
 
@@ -908,9 +944,9 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
-        // Canary at 3% → blocked (lower)
         CreateRolloutRequest canary2 = CreateRolloutRequest.builder()
                 .configId(UUID.fromString(configId))
                 .type("canary")
@@ -918,6 +954,7 @@ class RolloutControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "deployer")
                         .content(objectMapper.writeValueAsString(canary2)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code", is("CANARY_POLICY_VIOLATION")));
@@ -933,6 +970,7 @@ class RolloutControllerTest {
 
         MvcResult result = mockMvc.perform(post("/v1/configs")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
                 .andReturn();

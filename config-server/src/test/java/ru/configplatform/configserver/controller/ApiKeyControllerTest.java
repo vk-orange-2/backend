@@ -40,6 +40,9 @@ class ApiKeyControllerTest {
     private UUID testServiceId;
     private static final short DEV_ENV_ID = 1;
 
+    private static final String TEST_AUTHOR = "test-author";
+    private static final String TEST_SERVICE_ACCOUNT = "test-service-account";
+
     @BeforeEach
     void setUp() {
         // Create environments
@@ -66,8 +69,10 @@ class ApiKeyControllerTest {
     @Test
     void shouldCreateApiKey() throws Exception {
         mockMvc.perform(put("/v1/api-keys")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", not(emptyString())));
     }
@@ -76,15 +81,19 @@ class ApiKeyControllerTest {
     void shouldReturnExistingApiKey() throws Exception {
         // First create an API key (returns full format: serviceId:envId:key)
         String apiKey = mockMvc.perform(put("/v1/api-keys")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
         // Then retrieve it - should return the same full format
         mockMvc.perform(get("/v1/api-keys")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk())
                 .andExpect(content().string(apiKey));
     }
@@ -94,8 +103,10 @@ class ApiKeyControllerTest {
         UUID randomServiceId = UUID.randomUUID();
 
         mockMvc.perform(get("/v1/api-keys")
-                .param("serviceId", randomServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", randomServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isNotFound());
     }
 
@@ -103,15 +114,19 @@ class ApiKeyControllerTest {
     void shouldResetApiKey() throws Exception {
         // Create initial API key (full format: serviceId:envId:key)
         String firstKey = mockMvc.perform(put("/v1/api-keys")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
         // Reset (should return a new key in full format)
         String secondKey = mockMvc.perform(put("/v1/api-keys")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
@@ -123,16 +138,20 @@ class ApiKeyControllerTest {
     void shouldGetConnectionTokenForValidApiKey() throws Exception {
         // Create API key
         String apiKey = mockMvc.perform(put("/v1/api-keys")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
         // Get connection token
         mockMvc.perform(get("/v1/api-keys/connection-token")
-                .param("apiKey", apiKey)
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("apiKey", apiKey)
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", not(emptyString())));
     }
@@ -141,16 +160,20 @@ class ApiKeyControllerTest {
     void shouldGetSubscriptionTokenForValidApiKey() throws Exception {
         // Create API key
         String apiKey = mockMvc.perform(put("/v1/api-keys")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
 
         // Get subscription token
         mockMvc.perform(get("/v1/api-keys/subscription-token")
-                .param("apiKey", apiKey)
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("apiKey", apiKey)
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", not(emptyString())));
     }
@@ -159,15 +182,19 @@ class ApiKeyControllerTest {
     void shouldReturn401ForInvalidApiKeyConnectionToken() throws Exception {
         // Create a key first (so the record exists)
         mockMvc.perform(put("/v1/api-keys")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk());
 
         // Try to get connection token with wrong API key
         mockMvc.perform(get("/v1/api-keys/connection-token")
-                .param("apiKey", "invalid-api-key")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("apiKey", "invalid-api-key")
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -175,15 +202,19 @@ class ApiKeyControllerTest {
     void shouldReturn401ForInvalidApiKeySubscriptionToken() throws Exception {
         // Create a key first (so the record exists)
         mockMvc.perform(put("/v1/api-keys")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isOk());
 
         // Try to get subscription token with wrong API key
         mockMvc.perform(get("/v1/api-keys/subscription-token")
-                .param("apiKey", "invalid-api-key")
-                .param("serviceId", testServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("apiKey", "invalid-api-key")
+                        .param("serviceId", testServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -192,9 +223,11 @@ class ApiKeyControllerTest {
         UUID randomServiceId = UUID.randomUUID();
 
         mockMvc.perform(get("/v1/api-keys/connection-token")
-                .param("apiKey", "any-key")
-                .param("serviceId", randomServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("apiKey", "any-key")
+                        .param("serviceId", randomServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -203,31 +236,39 @@ class ApiKeyControllerTest {
         UUID randomServiceId = UUID.randomUUID();
 
         mockMvc.perform(get("/v1/api-keys/subscription-token")
-                .param("apiKey", "any-key")
-                .param("serviceId", randomServiceId.toString())
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("apiKey", "any-key")
+                        .param("serviceId", randomServiceId.toString())
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isUnauthorized());
     }
 
     @Test
     void shouldReturn400ForMissingServiceId() throws Exception {
         mockMvc.perform(get("/v1/api-keys")
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isBadRequest());
     }
 
     @Test
     void shouldReturn400ForInvalidServiceId() throws Exception {
         mockMvc.perform(get("/v1/api-keys")
-                .param("serviceId", "not-a-uuid")
-                .param("environmentId", String.valueOf(DEV_ENV_ID)))
+                        .param("serviceId", "not-a-uuid")
+                        .param("environmentId", String.valueOf(DEV_ENV_ID))
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isBadRequest());
     }
 
     @Test
     void shouldReturn400ForMissingEnvironmentId() throws Exception {
         mockMvc.perform(get("/v1/api-keys")
-                .param("serviceId", testServiceId.toString()))
+                        .param("serviceId", testServiceId.toString())
+                        .header("X-Author", TEST_AUTHOR)
+                        .header("X-Service-Account", TEST_SERVICE_ACCOUNT))
                 .andExpect(status().isBadRequest());
     }
 }

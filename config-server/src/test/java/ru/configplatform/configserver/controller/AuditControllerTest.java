@@ -30,11 +30,14 @@ class AuditControllerTest {
     @Autowired private MockMvc mockMvc;
     @Autowired private ObjectMapper objectMapper;
 
+    private static final String TEST_AUTHOR = "test-auditor";
+
     @Test
     void shouldLogCreateOperation() throws Exception {
         createConfig("audit-create-svc", "dev", "key1", "val1", "creator-user");
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "audit-create-svc"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.entries", hasSize(greaterThanOrEqualTo(1))))
@@ -53,11 +56,13 @@ class AuditControllerTest {
                 .expectedVersion(1L).build();
 
         mockMvc.perform(put("/v1/configs/" + id)
-                .contentType(MediaType.APPLICATION_JSON)
-                .header("X-Author", "user-b")
-                .content(objectMapper.writeValueAsString(update)));
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "user-b")
+                        .content(objectMapper.writeValueAsString(update)))
+                .andExpect(status().isOk());
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "audit-update-svc")
                         .param("operation", "UPDATE"))
                 .andExpect(status().isOk())
@@ -77,11 +82,12 @@ class AuditControllerTest {
                 .expectedVersion(1L).build();
 
         mockMvc.perform(delete("/v1/configs/" + id)
-                .contentType(MediaType.APPLICATION_JSON)
-                .header("X-Author", "user-d")
-                .content(objectMapper.writeValueAsString(deleteReq)));
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", "user-d")
+                        .content(objectMapper.writeValueAsString(deleteReq)));
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "audit-del-svc")
                         .param("operation", "DELETE"))
                 .andExpect(status().isOk())
@@ -95,6 +101,7 @@ class AuditControllerTest {
         createConfig("audit-actor-svc", "dev", "k2", "v2", "bob");
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("actor", "alice"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.entries[*].actor",
@@ -106,6 +113,7 @@ class AuditControllerTest {
         createConfig("audit-time-svc", "dev", "tk", "tv", "user");
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "audit-time-svc")
                         .param("from", "2099-01-01T00:00:00Z"))
                 .andExpect(status().isOk())
@@ -119,6 +127,7 @@ class AuditControllerTest {
         }
 
         mockMvc.perform(get("/v1/audit")
+                        .header("X-Author", TEST_AUTHOR)
                         .param("serviceName", "audit-page-svc")
                         .param("page", "0")
                         .param("size", "2"))

@@ -107,3 +107,26 @@ decorator:
     query:
       log-level: OFF
       enable-observability: false
+
+rate-limit:
+  user:
+    read:
+      rate: 20
+      burst: 50
+    write:
+      rate: 2
+      burst: 10
+  service-account:
+    read:
+      rate: 100
+      burst: 200
+    write:
+      rate: 5
+      burst: 20
+  ip:
+    read:
+      rate: 100
+      burst: 200
+    write:
+      rate: 5
+      burst: 20
