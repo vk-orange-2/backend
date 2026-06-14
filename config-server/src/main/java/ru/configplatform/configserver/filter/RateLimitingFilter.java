@@ -42,18 +42,24 @@ public class RateLimitingFilter
             return;
         }
 
-        boolean write =
-                !"GET".equals(request.getMethod());
+        String author = request.getHeader("X-Author");
+        String serviceAccount = request.getHeader("X-Service-Account");
 
-        String operation =
-                write ? "write" : "read";
-        String author =
-                request.getHeader("X-Author");
+        log.info("author = {}, serviceAccount = {}", author, serviceAccount);
 
-        String serviceAccount =
-                request.getHeader("X-Service-Account");
+        if (author == null && serviceAccount == null) {
+            response.setStatus(HttpStatus.BAD_REQUEST.value());
+            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+            response.getWriter().write("""
+                    {
+                      "message": "Missing required headers: X-Author or X-Service-Account"
+                    }
+                    """);
+            return;
+        }
 
-        log.info("author = " + author + " serviceAccount = " + serviceAccount);
+        boolean write = !"GET".equals(request.getMethod());
+        String operation = write ? "write" : "read";
 
         try {
 
@@ -95,10 +101,10 @@ public class RateLimitingFilter
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
 
             response.getWriter().write("""
-            {
-              "message":"Rate limit exceeded"
-            }
-            """);
+                    {
+                      "message": "Rate limit exceeded"
+                    }
+                    """);
         }
     }
 }
