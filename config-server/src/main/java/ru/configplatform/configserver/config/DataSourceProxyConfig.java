@@ -6,6 +6,7 @@ import net.ttddyy.dsproxy.listener.ChainListener;
 import net.ttddyy.dsproxy.listener.logging.SLF4JLogLevel;
 import net.ttddyy.dsproxy.listener.logging.SLF4JQueryLoggingListener;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -15,6 +16,12 @@ import ru.configplatform.configserver.observation.ObservationQueryListener;
 import javax.sql.DataSource;
 
 @Configuration
+@ConditionalOnProperty(
+        prefix = "observability.jdbc-proxy",
+        name = "enabled",
+        havingValue = "true",
+        matchIfMissing = false
+)
 public class DataSourceProxyConfig {
 
     @Autowired
