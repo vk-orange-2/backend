@@ -1,23 +1,15 @@
 package ru.configplatform.configserver.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ru.configplatform.configserver.dto.ConfigStateResponse;
-import ru.configplatform.configserver.model.ConfigEntity;
-import ru.configplatform.configserver.model.EnvironmentEntity;
-import ru.configplatform.configserver.model.RolloutEntity;
-import ru.configplatform.configserver.model.RolloutStatus;
-import ru.configplatform.configserver.model.RolloutType;
-import ru.configplatform.configserver.model.ServiceEntity;
-import ru.configplatform.configserver.repository.ConfigRepository;
-import ru.configplatform.configserver.repository.ConfigVersionRepository;
-import ru.configplatform.configserver.repository.EnvironmentRepository;
-import ru.configplatform.configserver.repository.RolloutRepository;
-import ru.configplatform.configserver.repository.ServiceRepository;
+import ru.configplatform.configserver.model.*;
+import ru.configplatform.configserver.repository.*;
 
 import java.util.List;
 import java.util.UUID;
@@ -26,11 +18,14 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class ConfigStateService {
 
+    private static final String ENCRYPTED_MARKER = "encrypted";
+
     private final ServiceRepository serviceRepository;
     private final EnvironmentRepository environmentRepository;
     private final ConfigRepository configRepository;
     private final ConfigVersionRepository configVersionRepository;
     private final RolloutRepository rolloutRepository;
+    private final EncryptionService encryptionService;
     private final ObjectMapper objectMapper;
 
     /**
@@ -81,7 +76,7 @@ public class ConfigStateService {
 
         // Latest version (in DB, may not be rolled out)
         long latestVersion = config.getCurrentVersion();
-        Object latestPayload = loadPayload(configId, latestVersion);
+        Object latestPayload = loadPayload(configId, latestVersion, config.getIsSecret());
 
         // Global version: last completed instant or gradual rollout
         Long globalVersion = null;
@@ -93,7 +88,7 @@ public class ConfigStateService {
         if (!completedFullRollouts.isEmpty()) {
             RolloutEntity lastGlobal = completedFullRollouts.get(0);
             globalVersion = lastGlobal.getTargetVersion();
-            globalPayload = loadPayload(configId, globalVersion);
+            globalPayload = loadPayload(configId, globalVersion, config.getIsSecret());
         }
 
         // Active gradual rollout (in_progress)
@@ -103,8 +98,7 @@ public class ConfigStateService {
                 && activeRollout.get().getType() == RolloutType.GRADUAL
                 && activeRollout.get().getStatus() == RolloutStatus.IN_PROGRESS) {
             RolloutEntity r = activeRollout.get();
-            Object targetPayload = loadPayload(configId, r.getTargetVersion());
-
+            Object targetPayload = loadPayload(configId, r.getTargetVersion(), config.getIsSecret());
             gradualState = ConfigStateResponse.GradualRolloutState.builder()
                     .rolloutId(r.getId())
                     .targetVersion(r.getTargetVersion())
@@ -121,8 +115,7 @@ public class ConfigStateService {
         var canaryRollout = rolloutRepository.findCompletedCanaryByConfigId(configId);
         if (canaryRollout.isPresent()) {
             RolloutEntity c = canaryRollout.get();
-            Object canaryPayload = loadPayload(configId, c.getTargetVersion());
-
+            Object canaryPayload = loadPayload(configId, c.getTargetVersion(), config.getIsSecret());
             canaryState = ConfigStateResponse.CanaryState.builder()
                     .rolloutId(c.getId())
                     .canaryVersion(c.getTargetVersion())
@@ -145,10 +138,29 @@ public class ConfigStateService {
                 .build();
     }
 
-    private Object loadPayload(UUID configId, long version) {
+    private Object loadPayload(UUID configId, long version, boolean isSecret) {
         return configVersionRepository
                 .findByConfigIdAndVersion(configId, version)
-                .map(v -> deserializePayload(v.getPayload()))
+                .map(v -> {
+                    String raw = v.getPayload();
+                    if (raw == null) return null;
+                    String plain;
+                    if (isSecret) {
+                        try {
+                            JsonNode node = objectMapper.readTree(raw);
+                            if (node.has(ENCRYPTED_MARKER) && node.get(ENCRYPTED_MARKER).isTextual()) {
+                                plain = encryptionService.decrypt(node.get(ENCRYPTED_MARKER).asText());
+                            } else {
+                                plain = encryptionService.decrypt(raw);
+                            }
+                        } catch (JsonProcessingException e) {
+                            throw new RuntimeException("Failed to parse encrypted payload wrapper", e);
+                        }
+                    } else {
+                        plain = raw;
+                    }
+                    return deserializePayload(plain);
+                })
                 .orElse(null);
     }
 

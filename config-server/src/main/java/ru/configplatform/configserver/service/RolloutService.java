@@ -1,6 +1,7 @@
 package ru.configplatform.configserver.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.Observation;
@@ -36,6 +37,8 @@ import java.util.UUID;
 @Slf4j
 public class RolloutService {
 
+    private static final String ENCRYPTED_MARKER = "encrypted";
+
     private final RolloutRepository rolloutRepository;
     private final ConfigRepository configRepository;
     private final ConfigVersionRepository configVersionRepository;
@@ -46,6 +49,7 @@ public class RolloutService {
     private final ObjectMapper objectMapper;
     private final DeliveryMetrics deliveryMetrics;
     private final ObservationRegistry observationRegistry;
+    private final EncryptionService encryptionService;
 
     /**
      * Создать и запустить rollout.
@@ -95,7 +99,8 @@ public class RolloutService {
                 .findByConfigIdAndVersion(config.getId(), targetVersion)
                 .orElseThrow(() -> new IllegalStateException("Target version not found"));
 
-        Object payload = deserializePayload(targetVersionEntity.getPayload());
+        String decryptedPayload = getPlainPayloadForVersion(config.getId(), targetVersion, config.getIsSecret());
+        Object payload = deserializePayload(decryptedPayload);
 
         RolloutEntity rollout;
 
@@ -115,10 +120,7 @@ public class RolloutService {
                         .build();
                 rollout = rolloutRepository.save(rollout);
 
-                // Публикуем в основной канал
                 publishInstantUpdate(config, serviceName, envCode, key, targetVersion, payload, rollout.getId());
-
-                // Если это instant, который "промоутит" canary — помечаем canary rolled_back
                 markCanarySupersededForConfig(config.getId(), rollout.getId());
             }
             case CANARY -> {
@@ -137,11 +139,9 @@ public class RolloutService {
                         .build();
                 rollout = rolloutRepository.save(rollout);
 
-                // Публикуем canary deploy в основной канал
                 publishCanaryDeploy(config, serviceName, envCode, key, targetVersion, payload,
                         request.getCanaryPercentage(), rollout.getId());
 
-                // Если заменяем предыдущий canary — помечаем старый как rolled_back
                 markCanarySupersededForConfig(config.getId(), rollout.getId());
             }
             case GRADUAL -> {
@@ -162,10 +162,8 @@ public class RolloutService {
                         .build();
                 rollout = rolloutRepository.save(rollout);
 
-                // Сразу выполняем первый deployment
                 executeNextDeployment(rollout, config, serviceName, envCode, key, targetVersion, payload);
 
-                // Если это gradual, который "промоутит" canary — помечаем canary
                 markCanarySupersededForConfig(config.getId(), rollout.getId());
             }
             default -> throw new IllegalArgumentException("Unsupported rollout type: " + type);
@@ -183,113 +181,6 @@ public class RolloutService {
                 serializePayload(auditData), ctx);
 
         return toResponse(rollout);
-    }
-
-    /**
-     * Определяет базовую версию для нового развертывания.
-     *
-     * Если конфигурация содержит completed canary rollout и мы создаем rollout, не являющийся canary
-     * (instant или gradual — т. е. повышение статуса canary version), то в качестве базовой версии должна использоваться базовая версия этого canary rollout
-     * это гарантирует, что при откате система вернется к состоянию, предшествовавшему canary rollout
-     *
-     * При создании нового canary rollout (замещающего старое) также следует унаследовать базовую версию от старого canary rollout,
-     * чтобы при откате система возвращалась к состоянию, предшествовавшему canary rollout (а не к промежуточной canary версии)
-     *
-     * В остальных случаях: базовая версия = целевая версия - 1 (или 0 — для самой первой версии)
-     */
-    private long determineBaseline(java.util.UUID configId, RolloutType newType, long targetVersion) {
-        var existingCanary = rolloutRepository.findCompletedCanaryByConfigId(configId);
-
-        if (existingCanary.isPresent()) {
-            RolloutEntity canary = existingCanary.get();
-            // For all types: if promoting or replacing canary, use canary's baseline
-            // so rollback goes to pre-canary state
-            return canary.getBaselineVersion();
-        }
-
-        // No canary — standard baseline
-        return targetVersion > 1 ? targetVersion - 1 : 0;
-    }
-
-    /**
-     * Проверяет ограничения политики canary rollout-а
-     *
-     * При наличии completed canary rollout-ов для сервиса и среды применяются следующие правила:
-     *
-     * Для той же конфигурации, в которой уже есть canary rollout:
-     * - canary rollout с тем же или большим процентом → OK
-     * - instant rollout → OK
-     * - gradual rollout → OK, но первый шаг должен охватывать как минимум процент canary rollout
-     * - rollback canary rollout → OK
-     *
-     * Для ДРУГОЙ конфигурации в том же сервисе и среде → OK
-     *
-     * все остальное → ЗАБЛОКИРОВАНО
-     */
-    private void validateCanaryPolicy(ConfigEntity config, RolloutType newType,
-                                      Integer newCanaryPercentage, Integer totalDeployments,
-                                      String serviceName, String envCode) {
-        List<RolloutEntity> completedCanaries = rolloutRepository
-                .findCompletedCanaryByServiceEnv(serviceName, envCode);
-
-        if (completedCanaries.isEmpty()) {
-            // Ограничения для canary отсутствуют
-            return;
-        }
-
-        // Get the canary percentage that's currently in effect (all completed canaries
-        // in a service+env must have the same percentage due to our policy)
-        int existingCanaryPercentage = completedCanaries.get(0).getCanaryPercentage();
-
-        // Check if this config already has a completed canary
-        boolean sameConfigHasCanary = completedCanaries.stream()
-                .anyMatch(r -> r.getConfig().getId().equals(config.getId()));
-
-        if (sameConfigHasCanary) {
-            switch (newType) {
-                case INSTANT:
-                    // Promoting canary to all → OK
-                    return;
-                case CANARY:
-                    // New canary on same config: must be same or greater percentage
-                    if (newCanaryPercentage < existingCanaryPercentage) {
-                        throw new CanaryPolicyViolationException(
-                                "New canary percentage (" + newCanaryPercentage
-                                        + ") must be >= existing canary percentage ("
-                                        + existingCanaryPercentage + ") for the same config");
-                    }
-                    return;
-                case GRADUAL:
-                    // Gradual promotion: each step covers 100/totalDeployments percent,
-                    // first step must be >= canary percentage
-                    int stepPercentage = totalDeployments != null && totalDeployments > 0
-                            ? 100 / totalDeployments : 100;
-                    if (stepPercentage < existingCanaryPercentage) {
-                        throw new CanaryPolicyViolationException(
-                                "Gradual rollout step size (" + stepPercentage
-                                        + "%) must be >= existing canary percentage ("
-                                        + existingCanaryPercentage + "%). "
-                                        + "Reduce totalDeployments to increase step size.");
-                    }
-                    return;
-                default:
-                    throw new CanaryPolicyViolationException(
-                            "Unsupported rollout type: " + newType);
-            }
-        }
-    }
-
-    /**
-     * Помечает любую ранее completed canary-версию для той же конфигурации как rolled_back
-     * (замещенную новым rollout). Пропускает rollout с идентификатором excludeRolloutId.
-     */
-    private void markCanarySupersededForConfig(UUID configId, UUID excludeRolloutId) {
-        rolloutRepository.findCompletedCanaryByConfigId(configId).ifPresent(oldCanary -> {
-            if (!oldCanary.getId().equals(excludeRolloutId)) {
-                oldCanary.markRolledBack();
-                rolloutRepository.save(oldCanary);
-            }
-        });
     }
 
     /**
@@ -325,7 +216,6 @@ public class RolloutService {
 
     /**
      * Получить все активные rollout-ы для service+environment.
-     * Используется SDK при реконнекте/старте — один запрос вместо N.
      */
     @Observed(
             name = "rollout.get_active",
@@ -341,7 +231,6 @@ public class RolloutService {
 
     /**
      * Остановить rollout
-     * Останавливает дальнейшее распространение без изменения глобальной версии
      */
     @Observed(
             name = "rollout.stop",
@@ -374,7 +263,7 @@ public class RolloutService {
     }
 
     /**
-     * Rollback rollout (FR-52, AR-28)
+     * Rollback rollout
      */
     @Observed(
             name = "rollout.rollback",
@@ -388,7 +277,6 @@ public class RolloutService {
         ConfigEntity config = rollout.getConfig();
         ensureConfigActive(config);
 
-        // For canary completed rollouts, allow rollback (this is the "undo canary" path)
         boolean isCanaryCompleted = rollout.getType() == RolloutType.CANARY
                 && rollout.getStatus() == RolloutStatus.COMPLETED;
 
@@ -396,25 +284,19 @@ public class RolloutService {
             throw new RolloutNotActiveException(rolloutId, rollout.getStatus().getValue());
         }
 
-        // Determine which version to rollback to
         long rollbackToVersion;
 
         if (request != null && request.getTargetVersion() != null) {
-            // Explicit target version (only for canary)
             if (!isCanaryCompleted && rollout.getType() != RolloutType.CANARY) {
                 throw new IllegalArgumentException("Custom targetVersion is only supported for canary rollouts");
             }
 
             long requestedVersion = request.getTargetVersion();
-
-            // Validate that this version exists
             configVersionRepository.findByConfigIdAndVersion(config.getId(), requestedVersion)
-                    .orElseThrow(() -> new VersionNotFoundException(
-                            config.getId(), requestedVersion));
+                    .orElseThrow(() -> new VersionNotFoundException(config.getId(), requestedVersion));
 
             rollbackToVersion = requestedVersion;
         } else {
-            // Default: rollback to baseline
             rollbackToVersion = rollout.getBaselineVersion();
         }
 
@@ -424,8 +306,6 @@ public class RolloutService {
 
     /**
      * Rollback a config to a specific version by creating an instant rollout.
-     * This is the replacement for ConfigService.rollback — it publishes to Centrifugo
-     * so SDK is notified.
      */
     @Observed(
             name = "rollout.rollback.config",
@@ -441,7 +321,6 @@ public class RolloutService {
                     request.getExpectedVersion(), config.getCurrentVersion());
         }
 
-        // Check no active rollout
         rolloutRepository.findActiveByConfigId(configId).ifPresent(existing -> {
             throw new ActiveRolloutExistsException(configId, existing.getId());
         });
@@ -452,10 +331,8 @@ public class RolloutService {
                 .findByConfigIdAndVersion(configId, rollbackToVersion)
                 .orElseThrow(() -> new VersionNotFoundException(configId, rollbackToVersion));
 
-        String rollbackPayload = rollbackVersionEntity.getPayload();
-        Object rollbackPayloadObj = deserializePayload(rollbackPayload);
+        String rollbackPayloadPlain = getPlainPayloadForVersion(configId, rollbackToVersion, config.getIsSecret());
 
-        // Создаем новую версию конфига (FR-24)
         long previousVersion = config.getCurrentVersion();
         long newVersion = previousVersion + 1;
 
@@ -466,22 +343,20 @@ public class RolloutService {
                 ? request.getComment()
                 : "Rollback to version " + rollbackToVersion;
 
+        String payloadToStore = buildStoredPayload(config.getIsSecret(), rollbackPayloadPlain);
         ConfigVersionEntity newVersionEntity = ConfigVersionEntity.builder()
                 .config(config)
                 .version(newVersion)
-                .payload(rollbackPayload)
+                .payload(payloadToStore)
                 .changeType("rollback")
                 .author(ctx.getActor())
                 .comment(comment)
                 .build();
         configVersionRepository.save(newVersionEntity);
 
-        // Вычисляем diff
-        String currentPayload = configVersionRepository
-                .findByConfigIdAndVersion(configId, previousVersion)
-                .map(ConfigVersionEntity::getPayload)
-                .orElse(null);
-        DiffResponse diff = diffService.computeDiff(currentPayload, rollbackPayload, previousVersion, newVersion);
+        // Вычисляем diff на основе расшифрованных данных
+        String currentPayloadPlain = getPlainPayloadForVersion(configId, previousVersion, config.getIsSecret());
+        DiffResponse diff = diffService.computeDiff(currentPayloadPlain, rollbackPayloadPlain, previousVersion, newVersion);
         String diffJson = diffService.serializeDiff(diff);
 
         // Публикуем в основной канал (всем клиентам)
@@ -506,9 +381,9 @@ public class RolloutService {
                 .build();
         rollout = rolloutRepository.save(rollout);
 
-        // Publish to Centrifugo
+        Object payloadObj = deserializePayload(rollbackPayloadPlain);
         publishInstantUpdate(config, serviceName, envCode, config.getConfigKey(),
-                newVersion, rollbackPayloadObj, rollout.getId());
+                newVersion, payloadObj, rollout.getId());
 
         // Supersede canary if any
         markCanarySupersededForConfig(configId, rollout.getId());
@@ -555,11 +430,8 @@ public class RolloutService {
         String envCode = config.getEnvironment().getCode();
         String key = config.getConfigKey();
 
-        ConfigVersionEntity targetVersionEntity = configVersionRepository
-                .findByConfigIdAndVersion(config.getId(), rollout.getTargetVersion())
-                .orElseThrow(() -> new IllegalStateException("Target version not found"));
-
-        Object payload = deserializePayload(targetVersionEntity.getPayload());
+        String decryptedPayload = getPlainPayloadForVersion(config.getId(), rollout.getTargetVersion(), config.getIsSecret());
+        Object payload = deserializePayload(decryptedPayload);
 
         executeNextDeployment(rollout, config, serviceName, envCode, key,
                 rollout.getTargetVersion(), payload);
@@ -621,16 +493,14 @@ public class RolloutService {
         String envCode = config.getEnvironment().getCode();
         String key = config.getConfigKey();
 
-        ConfigVersionEntity targetVersionEntity = configVersionRepository
-                .findByConfigIdAndVersion(config.getId(), rollout.getTargetVersion())
-                .orElse(null);
-
-        if (targetVersionEntity == null) {
+        String decryptedPayload = getPlainPayloadForVersion(config.getId(), rollout.getTargetVersion(), config.getIsSecret());
+        if (decryptedPayload == null) {
             log.error("Target version {} not found for rollout {}", rollout.getTargetVersion(), rollout.getId());
             return;
         }
 
-        Object payload = deserializePayload(targetVersionEntity.getPayload());
+        Object payload = deserializePayload(decryptedPayload);
+
         executeNextDeployment(rollout, config, serviceName, envCode, key,
                 rollout.getTargetVersion(), payload);
         rolloutRepository.save(rollout);
@@ -668,6 +538,98 @@ public class RolloutService {
         }
     }
 
+    private long determineBaseline(java.util.UUID configId, RolloutType newType, long targetVersion) {
+        var existingCanary = rolloutRepository.findCompletedCanaryByConfigId(configId);
+        if (existingCanary.isPresent()) {
+            RolloutEntity canary = existingCanary.get();
+            return canary.getBaselineVersion();
+        }
+        return targetVersion > 1 ? targetVersion - 1 : 0;
+    }
+
+    private void validateCanaryPolicy(ConfigEntity config, RolloutType newType,
+                                      Integer newCanaryPercentage, Integer totalDeployments,
+                                      String serviceName, String envCode) {
+        List<RolloutEntity> completedCanaries = rolloutRepository
+                .findCompletedCanaryByServiceEnv(serviceName, envCode);
+
+        if (completedCanaries.isEmpty()) {
+            return;
+        }
+
+        int existingCanaryPercentage = completedCanaries.get(0).getCanaryPercentage();
+        boolean sameConfigHasCanary = completedCanaries.stream()
+                .anyMatch(r -> r.getConfig().getId().equals(config.getId()));
+
+        if (sameConfigHasCanary) {
+            switch (newType) {
+                case INSTANT -> {
+                    return;
+                }
+                case CANARY -> {
+                    if (newCanaryPercentage < existingCanaryPercentage) {
+                        throw new CanaryPolicyViolationException(
+                                "New canary percentage (" + newCanaryPercentage
+                                        + ") must be >= existing canary percentage ("
+                                        + existingCanaryPercentage + ") for the same config");
+                    }
+                    return;
+                }
+                case GRADUAL -> {
+                    int stepPercentage = totalDeployments != null && totalDeployments > 0
+                            ? 100 / totalDeployments : 100;
+                    if (stepPercentage < existingCanaryPercentage) {
+                        throw new CanaryPolicyViolationException(
+                                "Gradual rollout step size (" + stepPercentage
+                                        + "%) must be >= existing canary percentage ("
+                                        + existingCanaryPercentage + "%). "
+                                        + "Reduce totalDeployments to increase step size.");
+                    }
+                    return;
+                }
+                default -> throw new CanaryPolicyViolationException(
+                        "Unsupported rollout type: " + newType);
+            }
+        }
+    }
+
+    private void markCanarySupersededForConfig(UUID configId, UUID excludeRolloutId) {
+        rolloutRepository.findCompletedCanaryByConfigId(configId).ifPresent(oldCanary -> {
+            if (!oldCanary.getId().equals(excludeRolloutId)) {
+                oldCanary.markRolledBack();
+                rolloutRepository.save(oldCanary);
+            }
+        });
+    }
+
+    private String getPlainPayloadForVersion(UUID configId, long version, boolean isSecret) {
+        ConfigVersionEntity entity = configVersionRepository
+                .findByConfigIdAndVersion(configId, version)
+                .orElse(null);
+        if (entity == null) return null;
+        String raw = entity.getPayload();
+        if (raw == null) return null;
+        if (!isSecret) return raw;
+        try {
+            JsonNode node = objectMapper.readTree(raw);
+            if (node.has(ENCRYPTED_MARKER) && node.get(ENCRYPTED_MARKER).isTextual()) {
+                return encryptionService.decrypt(node.get(ENCRYPTED_MARKER).asText());
+            }
+            return encryptionService.decrypt(raw);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to parse encrypted payload wrapper", e);
+        }
+    }
+
+    private String buildStoredPayload(boolean isSecret, String plainPayloadJson) {
+        if (isSecret && plainPayloadJson != null && !"null".equals(plainPayloadJson)) {
+            String encrypted = encryptionService.encrypt(plainPayloadJson);
+            return String.format("{\"%s\":\"%s\"}", ENCRYPTED_MARKER, encrypted);
+        } else {
+            return plainPayloadJson;
+        }
+    }
+
     private RolloutResponse executeRollback(RolloutEntity rollout, ConfigEntity config,
                                             long rollbackToVersion, String comment,
                                             RequestContext ctx) {
@@ -676,14 +638,7 @@ public class RolloutService {
                     "Cannot rollback: target version is 0 (no previous version exists)");
         }
 
-        ConfigVersionEntity rollbackVersionEntity = configVersionRepository
-                .findByConfigIdAndVersion(config.getId(), rollbackToVersion)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Version " + rollbackToVersion + " not found for config "
-                                + config.getId()));
-
-        String rollbackPayload = rollbackVersionEntity.getPayload();
-        Object rollbackPayloadObj = deserializePayload(rollbackPayload);
+        String rollbackPayloadPlain = getPlainPayloadForVersion(config.getId(), rollbackToVersion, config.getIsSecret());
 
         long previousVersion = config.getCurrentVersion();
         long newVersion = previousVersion + 1;
@@ -694,28 +649,27 @@ public class RolloutService {
                 ? comment
                 : "Rollback from rollout " + rollout.getId() + " to version " + rollbackToVersion;
 
+        String payloadToStore = buildStoredPayload(config.getIsSecret(), rollbackPayloadPlain);
         ConfigVersionEntity newVersionEntity = ConfigVersionEntity.builder()
                 .config(config)
                 .version(newVersion)
-                .payload(rollbackPayload)
+                .payload(payloadToStore)
                 .changeType("rollback")
                 .author(ctx.getActor())
                 .comment(rollbackComment)
                 .build();
         configVersionRepository.save(newVersionEntity);
 
-        String currentPayload = configVersionRepository
-                .findByConfigIdAndVersion(config.getId(), previousVersion)
-                .map(ConfigVersionEntity::getPayload)
-                .orElse(null);
-        DiffResponse diff = diffService.computeDiff(currentPayload, rollbackPayload, previousVersion, newVersion);
+        String currentPayloadPlain = getPlainPayloadForVersion(config.getId(), previousVersion, config.getIsSecret());
+        DiffResponse diff = diffService.computeDiff(currentPayloadPlain, rollbackPayloadPlain, previousVersion, newVersion);
         String diffJson = diffService.serializeDiff(diff);
 
         String serviceName = config.getService().getName();
         String envCode = config.getEnvironment().getCode();
 
+        Object payloadObj = deserializePayload(rollbackPayloadPlain);
         publishInstantUpdate(config, serviceName, envCode, config.getConfigKey(),
-                newVersion, rollbackPayloadObj, rollout.getId());
+                newVersion, payloadObj, rollout.getId());
 
         rollout.markRolledBack();
         rolloutRepository.save(rollout);
