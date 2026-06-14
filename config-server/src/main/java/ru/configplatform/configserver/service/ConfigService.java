@@ -1,6 +1,7 @@
 package ru.configplatform.configserver.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.observation.annotation.Observed;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +26,8 @@ import java.util.UUID;
 @Slf4j
 public class ConfigService {
 
+    private static final String ENCRYPTED_MARKER = "encrypted";
+
     private final ServiceRepository serviceRepository;
     private final EnvironmentRepository environmentRepository;
     private final ConfigRepository configRepository;
@@ -35,6 +38,7 @@ public class ConfigService {
     private final DiffService diffService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
+    private final EncryptionService encryptionService;
 
     /**
      * Создает новый конфиг или обновляет существующий (upsert по service+env+key)
@@ -113,7 +117,8 @@ public class ConfigService {
                 ctx
         );
 
-        return toResponse(config, request.getValue());
+        Object finalPayload = deserializePayload(payloadJson);
+        return toResponse(config, finalPayload);
     }
 
     /**
@@ -200,7 +205,8 @@ public class ConfigService {
 
         auditService.log(config, "UPDATE", previousVersion, newVersion, diffJson, ctx);
 
-        return toResponse(config, request.getValue());
+        Object finalPayload = deserializePayload(payloadJson);
+        return toResponse(config, finalPayload);
     }
 
     /**
@@ -264,7 +270,7 @@ public class ConfigService {
         List<VersionResponse> versions = configVersionRepository
                 .findByConfigIdOrderByVersionDesc(configId)
                 .stream()
-                .map(this::toVersionResponse)
+                .map(entity -> toVersionResponse(entity, config.getIsSecret()))
                 .toList();
 
         return VersionHistoryResponse.builder().versions(versions).build();
@@ -287,7 +293,7 @@ public class ConfigService {
                 .findByConfigIdAndVersion(configId, version)
                 .orElseThrow(() -> new VersionNotFoundException(configId, version));
 
-        return toVersionResponse(versionEntity);
+        return toVersionResponse(versionEntity, config.getIsSecret());
     }
 
     /**
@@ -384,13 +390,23 @@ public class ConfigService {
                 );
     }
 
+    /**
+     * Сохраняет версию конфига, шифруя payload, если конфиг помечен как секретный.
+     */
     private void createVersionRecord(ConfigEntity config, long version,
-                                     String payloadJson, String changeType,
+                                     String plainPayloadJson, String changeType,
                                      String author, String comment) {
+        String storedPayload;
+        if (config.getIsSecret() && plainPayloadJson != null && !"null".equals(plainPayloadJson)) {
+            String encrypted = encryptionService.encrypt(plainPayloadJson);
+            storedPayload = String.format("{\"%s\":\"%s\"}", ENCRYPTED_MARKER, encrypted);
+        } else {
+            storedPayload = plainPayloadJson;
+        }
         ConfigVersionEntity versionEntity = ConfigVersionEntity.builder()
                 .config(config)
                 .version(version)
-                .payload(payloadJson)
+                .payload(storedPayload)
                 .changeType(changeType)
                 .author(author)
                 .comment(comment)
@@ -398,17 +414,47 @@ public class ConfigService {
         configVersionRepository.save(versionEntity);
     }
 
+    /**
+     * Возвращает расшифрованный payload для указанной версии конфига.
+     */
     private String getPayloadForVersion(UUID configId, long version) {
-        return configVersionRepository
+        ConfigEntity config = configRepository.findById(configId)
+                .orElseThrow(() -> new ConfigNotFoundException(configId));
+        ConfigVersionEntity versionEntity = configVersionRepository
                 .findByConfigIdAndVersion(configId, version)
-                .map(ConfigVersionEntity::getPayload)
                 .orElse(null);
+        if (versionEntity == null) return null;
+        return getDecryptedPayload(versionEntity, config.getIsSecret());
+    }
+
+    /**
+     * Расшифровывает payload сущности версии, если необходимо.
+     */
+    private String getDecryptedPayload(ConfigVersionEntity entity, boolean isSecret) {
+        String raw = entity.getPayload();
+        if (raw == null) return null;
+        if (!isSecret) return raw;
+        // Парсим JSON, ищем поле "encrypted"
+        try {
+            JsonNode node = objectMapper.readTree(raw);
+            if (node.has(ENCRYPTED_MARKER) && node.get(ENCRYPTED_MARKER).isTextual()) {
+                String encrypted = node.get(ENCRYPTED_MARKER).asText();
+                return encryptionService.decrypt(encrypted);
+            }
+            // fallback: если по какой-то причине нет обёртки, но isSecret=true, пробуем расшифровать как есть
+            return encryptionService.decrypt(raw);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("Failed to parse encrypted payload wrapper", e);
+        }
     }
 
     private Object loadLatestPayload(ConfigEntity config) {
         return configVersionRepository
                 .findByConfigIdAndVersion(config.getId(), config.getCurrentVersion())
-                .map(v -> deserializePayload(v.getPayload()))
+                .map(v -> {
+                    String plain = getDecryptedPayload(v, config.getIsSecret());
+                    return deserializePayload(plain);
+                })
                 .orElse(null);
     }
 
@@ -443,12 +489,14 @@ public class ConfigService {
         }
     }
 
-    private VersionResponse toVersionResponse(ConfigVersionEntity entity) {
+    private VersionResponse toVersionResponse(ConfigVersionEntity entity, boolean isSecret) {
+        String plain = getDecryptedPayload(entity, isSecret);
+        Object payloadObj = plain != null ? deserializePayload(plain) : null;
         return VersionResponse.builder()
                 .id(entity.getId())
                 .configId(entity.getConfig().getId())
                 .version(entity.getVersion())
-                .payload(deserializePayload(entity.getPayload()))
+                .payload(payloadObj)
                 .changeType(entity.getChangeType())
                 .author(entity.getAuthor())
                 .comment(entity.getComment())
