@@ -123,3 +123,10 @@ rate-limit:
     write:
       rate: 5
       burst: 20
+  ip:
+    read:
+      rate: 100
+      burst: 200
+    write:
+      rate: 5
+      burst: 20

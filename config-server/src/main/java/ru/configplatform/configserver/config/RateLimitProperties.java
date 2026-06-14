@@ -9,6 +9,7 @@ public class RateLimitProperties {
 
     private Subject user = new Subject();
     private Subject serviceAccount = new Subject();
+    private Subject ip = new Subject();
 
     @Data
     public static class Subject {

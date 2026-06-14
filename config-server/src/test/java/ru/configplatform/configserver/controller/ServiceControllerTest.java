@@ -29,6 +29,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Transactional
 class ServiceControllerTest {
 
+    private static final String TEST_AUTHOR = "test-user";
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -37,11 +39,11 @@ class ServiceControllerTest {
 
     @Test
     void shouldReturnServicesAfterCreatingConfigs() throws Exception {
-        // Создаем конфиги для двух разных сервисов в окружении dev
         createConfigAndReturnId("svc-order", "dev", "key1", "val1");
         createConfigAndReturnId("svc-notification", "dev", "key2", "val2");
 
-        mockMvc.perform(get("/v1/services"))
+        mockMvc.perform(get("/v1/services")
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(2)))
                 .andExpect(jsonPath("$[0].name", is("svc-order")))
@@ -50,13 +52,12 @@ class ServiceControllerTest {
 
     @Test
     void shouldNotReturnDuplicates() throws Exception {
-        // Один сервис, но разные ключи в одном окружении
         createConfigAndReturnId("dedup-service", "dev", "key-a", "value-a");
         createConfigAndReturnId("dedup-service", "dev", "key-b", "value-b");
-        // Тот же сервис в другом окружении — не должен дублироваться
         createConfigAndReturnId("dedup-service", "prod", "key-a", "value-c");
 
-        mockMvc.perform(get("/v1/services"))
+        mockMvc.perform(get("/v1/services")
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$", hasSize(1)))
                 .andExpect(jsonPath("$[0].name", is("dedup-service")));
@@ -71,6 +72,7 @@ class ServiceControllerTest {
 
         mockMvc.perform(post("/v1/services")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.name", is(request.getName())))
@@ -87,11 +89,13 @@ class ServiceControllerTest {
 
         mockMvc.perform(post("/v1/services")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated());
 
         mockMvc.perform(post("/v1/services")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code", is("SERVICE_ALREADY_EXISTS")));
@@ -105,18 +109,18 @@ class ServiceControllerTest {
 
         mockMvc.perform(post("/v1/services")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest());
     }
 
     @Test
     void shouldReturnServiceEnvState() throws Exception {
-        // Create config
         String configId = createConfigAndReturnId("state-svc", "dev", "state-key",
                 Map.of("v", 1));
 
-        // Config created but not rolled out — globalVersion should be null
-        mockMvc.perform(get("/v1/services/state-svc/envs/dev/state"))
+        mockMvc.perform(get("/v1/services/state-svc/envs/dev/state")
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.serviceName", is("state-svc")))
                 .andExpect(jsonPath("$.environment", is("dev")))
@@ -127,17 +131,17 @@ class ServiceControllerTest {
                 .andExpect(jsonPath("$.configs[0].globalVersion").doesNotExist())
                 .andExpect(jsonPath("$.configs[0].globalPayload").doesNotExist());
 
-        // Create instant rollout → now globalVersion should appear
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(Map.of(
                                 "configId", configId,
                                 "type", "instant"
                         ))))
                 .andExpect(status().isCreated());
 
-        // After instant rollout — globalVersion = latestVersion
-        mockMvc.perform(get("/v1/services/state-svc/envs/dev/state"))
+        mockMvc.perform(get("/v1/services/state-svc/envs/dev/state")
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.configs[0].latestVersion", is(1)))
                 .andExpect(jsonPath("$.configs[0].latestPayload.v", is(1)))
@@ -147,32 +151,30 @@ class ServiceControllerTest {
 
     @Test
     void shouldReturnStateWithCanary() throws Exception {
-        // Create config
         String configId = createConfigAndReturnId("canary-state-svc", "dev", "canary-key",
                 Map.of("v", 1));
 
-        // Rollout v1 to all
         mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(Map.of(
                                 "configId", configId,
                                 "type", "instant"
                         ))))
                 .andExpect(status().isCreated());
 
-        // Update config to v2
         mockMvc.perform(put("/v1/configs/" + configId)
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(Map.of(
                                 "value", Map.of("v", 2),
                                 "expectedVersion", 1
-                        )))
-                        .header("X-Actor", "test"))
+                        ))))
                 .andExpect(status().isOk());
 
-        // Canary deploy v2 to 5%
         String canaryRolloutResponse = mockMvc.perform(post("/v1/rollouts")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(Map.of(
                                 "configId", configId,
                                 "type", "canary",
@@ -181,8 +183,8 @@ class ServiceControllerTest {
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
 
-        // State should show globalVersion=1 (instant), canary on v2
-        mockMvc.perform(get("/v1/services/canary-state-svc/envs/dev/state"))
+        mockMvc.perform(get("/v1/services/canary-state-svc/envs/dev/state")
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.configs[0].latestVersion", is(2)))
                 .andExpect(jsonPath("$.configs[0].globalVersion", is(1)))
@@ -196,15 +198,14 @@ class ServiceControllerTest {
         String configId = createConfigAndReturnId("del-state-svc", "dev", "del-key",
                 Map.of("v", 1));
 
-        // Delete config
         mockMvc.perform(delete("/v1/configs/" + configId)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(1L))
-                        .header("X-Actor", "test"))
+                        .header("X-Author", TEST_AUTHOR)
+                        .content(objectMapper.writeValueAsString(1L)))
                 .andExpect(status().isNoContent());
 
-        // Deleted config should not appear in state
-        mockMvc.perform(get("/v1/services/del-state-svc/envs/dev/state"))
+        mockMvc.perform(get("/v1/services/del-state-svc/envs/dev/state")
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.configs", hasSize(0)));
     }
@@ -220,6 +221,7 @@ class ServiceControllerTest {
                 .build();
         mockMvc.perform(put("/v1/configs/" + configId)
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(update)));
 
         CreateRolloutRequest canary = CreateRolloutRequest.builder()
@@ -229,9 +231,11 @@ class ServiceControllerTest {
                 .build();
         mockMvc.perform(post("/v1/rollouts")
                 .contentType(MediaType.APPLICATION_JSON)
+                .header("X-Author", TEST_AUTHOR)
                 .content(objectMapper.writeValueAsString(canary)));
 
-        mockMvc.perform(get("/v1/services/state-canary-svc/envs/dev/state"))
+        mockMvc.perform(get("/v1/services/state-canary-svc/envs/dev/state")
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.configs[0].canary.percentage", is(10)))
                 .andExpect(jsonPath("$.configs[0].canary.canaryVersion", is(2)));
@@ -239,7 +243,8 @@ class ServiceControllerTest {
 
     @Test
     void shouldReturnEmptyStateForUnknownService() throws Exception {
-        mockMvc.perform(get("/v1/services/unknown-svc-" + UUID.randomUUID() + "/envs/dev/state"))
+        mockMvc.perform(get("/v1/services/unknown-svc-" + UUID.randomUUID() + "/envs/dev/state")
+                        .header("X-Author", TEST_AUTHOR))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.configs", hasSize(0)));
     }
@@ -254,6 +259,7 @@ class ServiceControllerTest {
 
         MvcResult result = mockMvc.perform(post("/v1/configs")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Author", TEST_AUTHOR)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
                 .andReturn();

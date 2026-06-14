@@ -39,6 +39,8 @@ class ConfigControllerTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    private static final String DEFAULT_AUTHOR_HEADER = "test-user";
+
     @Test
     void shouldCreateConfigAndReturnVersion1() throws Exception {
         CreateConfigRequest request = CreateConfigRequest.builder()
@@ -50,6 +52,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(post("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
@@ -74,6 +77,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(post("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
@@ -107,6 +111,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(post("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
@@ -116,6 +121,7 @@ class ConfigControllerTest {
         request.setExpectedVersion(1L);
 
         mockMvc.perform(post("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -128,7 +134,8 @@ class ConfigControllerTest {
         String id = createConfigAndReturnId("test-getbyid-svc", "dev", "some-key",
                 Map.of("a", 1));
 
-        mockMvc.perform(get("/v1/configs/" + id))
+        mockMvc.perform(get("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id", is(id)))
                 .andExpect(jsonPath("$.configKey", is("some-key")))
@@ -137,7 +144,8 @@ class ConfigControllerTest {
 
     @Test
     void shouldReturn404ForNonexistentConfig() throws Exception {
-        mockMvc.perform(get("/v1/configs/" + UUID.randomUUID()))
+        mockMvc.perform(get("/v1/configs/" + UUID.randomUUID())
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code", is("NOT_FOUND")));
     }
@@ -148,6 +156,7 @@ class ConfigControllerTest {
         createConfig("test-payment", "prod", "timeout", "5000");
 
         mockMvc.perform(get("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .param("serviceName", "test-payment")
                         .param("environment", "prod"))
                 .andExpect(status().isOk())
@@ -157,6 +166,7 @@ class ConfigControllerTest {
     @Test
     void shouldReturnEmptyListForUnknownService() throws Exception {
         mockMvc.perform(get("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .param("serviceName", "nonexistent-" + UUID.randomUUID())
                         .param("environment", "dev"))
                 .andExpect(status().isOk())
@@ -168,11 +178,13 @@ class ConfigControllerTest {
         String id = createConfigAndReturnId("test-list-del-svc", "dev", "del-key", "val");
 
         mockMvc.perform(delete("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(1L)))
                 .andExpect(status().isNoContent());
 
         mockMvc.perform(get("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .param("serviceName", "test-list-del-svc")
                         .param("environment", "dev"))
                 .andExpect(status().isOk())
@@ -191,6 +203,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(put("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(update)))
                 .andExpect(status().isOk())
@@ -203,6 +216,7 @@ class ConfigControllerTest {
         String id = createConfigAndReturnId("test-upd-del-svc", "dev", "key1", "val1");
 
         mockMvc.perform(delete("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(1L)))
                 .andExpect(status().isNoContent());
@@ -213,6 +227,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(put("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(update)))
                 .andExpect(status().isNotFound());
@@ -233,7 +248,8 @@ class ConfigControllerTest {
                 .header("X-Author", "editor")
                 .content(objectMapper.writeValueAsString(update)));
 
-        mockMvc.perform(get("/v1/configs/" + id + "/versions"))
+        mockMvc.perform(get("/v1/configs/" + id + "/versions")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.versions", hasSize(2)))
                 .andExpect(jsonPath("$.versions[0].version", is(2)))
@@ -248,7 +264,8 @@ class ConfigControllerTest {
         String id = createConfigAndReturnId("test-spec-svc", "dev", "spec-key",
                 Map.of("original", true));
 
-        mockMvc.perform(get("/v1/configs/" + id + "/versions/1"))
+        mockMvc.perform(get("/v1/configs/" + id + "/versions/1")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.version", is(1)))
                 .andExpect(jsonPath("$.payload.original", is(true)));
@@ -258,7 +275,8 @@ class ConfigControllerTest {
     void shouldReturn404ForNonexistentVersion() throws Exception {
         String id = createConfigAndReturnId("test-ver404-svc", "dev", "ver404-key", "val");
 
-        mockMvc.perform(get("/v1/configs/" + id + "/versions/999"))
+        mockMvc.perform(get("/v1/configs/" + id + "/versions/999")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code", is("VERSION_NOT_FOUND")));
     }
@@ -268,17 +286,20 @@ class ConfigControllerTest {
         String id = createConfigAndReturnId("test-del-svc", "dev", "delete-me", "value");
 
         mockMvc.perform(delete("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(1L)))
                 .andExpect(status().isNoContent());
 
-        mockMvc.perform(get("/v1/configs/" + id))
+        mockMvc.perform(get("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER))
                 .andExpect(status().isNotFound());
     }
 
     @Test
     void shouldReturn404WhenDeletingNonexistent() throws Exception {
         mockMvc.perform(delete("/v1/configs/" + UUID.randomUUID())
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(1L)))
                 .andExpect(status().isNotFound());
@@ -294,6 +315,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(post("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest())
@@ -310,6 +332,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(post("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest());
@@ -318,6 +341,7 @@ class ConfigControllerTest {
     @Test
     void shouldReturn400WhenMissingQueryParams() throws Exception {
         mockMvc.perform(get("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .param("serviceName", "some-service"))
                 .andExpect(status().isBadRequest());
     }
@@ -333,6 +357,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(put("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(update)))
                 .andExpect(status().isConflict())
@@ -352,6 +377,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(put("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(updateA)))
                 .andExpect(status().isOk())
@@ -363,6 +389,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(put("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(updateB)))
                 .andExpect(status().isConflict())
@@ -382,6 +409,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(put("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(update)))
                 .andExpect(status().isOk());
@@ -391,6 +419,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(delete("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(deleteReq)))
                 .andExpect(status().isConflict());
@@ -406,6 +435,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(delete("/v1/configs/" + id)
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(deleteReq)))
                 .andExpect(status().isNoContent());
@@ -421,10 +451,12 @@ class ConfigControllerTest {
                 .expectedVersion(1L).build();
 
         mockMvc.perform(put("/v1/configs/" + id)
+                .header("X-Author", DEFAULT_AUTHOR_HEADER)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(update)));
 
         mockMvc.perform(get("/v1/configs/" + id + "/diff")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .param("from", "1")
                         .param("to", "2"))
                 .andExpect(status().isOk())
@@ -441,6 +473,7 @@ class ConfigControllerTest {
                 .service("svc").env("dev").key("").value("val").build();
 
         mockMvc.perform(post("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest());
@@ -455,6 +488,7 @@ class ConfigControllerTest {
                 .build();
 
         mockMvc.perform(post("/v1/configs")
+                .header("X-Author", DEFAULT_AUTHOR_HEADER)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(request)));
     }
@@ -468,6 +502,7 @@ class ConfigControllerTest {
                 .build();
 
         MvcResult result = mockMvc.perform(post("/v1/configs")
+                        .header("X-Author", DEFAULT_AUTHOR_HEADER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())

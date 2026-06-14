@@ -42,11 +42,14 @@ public class RateLimitingFilter
             return;
         }
 
+        // Получаем идентификаторы клиента
+        String clientIp = getClientIpAddress(request);
         String author = request.getHeader("X-Author");
         String serviceAccount = request.getHeader("X-Service-Account");
 
-        log.info("author = {}, serviceAccount = {}", author, serviceAccount);
+        log.info("IP = {}, author = {}, serviceAccount = {}", clientIp, author, serviceAccount);
 
+        // Обязательное наличие хотя бы одного заголовка
         if (author == null && serviceAccount == null) {
             response.setStatus(HttpStatus.BAD_REQUEST.value());
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
@@ -62,30 +65,28 @@ public class RateLimitingFilter
         String operation = write ? "write" : "read";
 
         try {
+            var ipLimit = write ? properties.getIp().getWrite() : properties.getIp().getRead();
+            rateLimitService.consume(
+                    "ip:" + clientIp + ":" + operation,
+                    ipLimit.getRate(),
+                    ipLimit.getBurst()
+            );
 
             if (author != null) {
-
-                var limit = write
-                        ? properties.getUser().getWrite()
-                        : properties.getUser().getRead();
-
+                var userLimit = write ? properties.getUser().getWrite() : properties.getUser().getRead();
                 rateLimitService.consume(
                         "user:" + author + ":" + operation,
-                        limit.getRate(),
-                        limit.getBurst()
+                        userLimit.getRate(),
+                        userLimit.getBurst()
                 );
             }
 
             if (serviceAccount != null) {
-
-                var limit = write
-                        ? properties.getServiceAccount().getWrite()
-                        : properties.getServiceAccount().getRead();
-
+                var saLimit = write ? properties.getServiceAccount().getWrite() : properties.getServiceAccount().getRead();
                 rateLimitService.consume(
                         "service:" + serviceAccount + ":" + operation,
-                        limit.getRate(),
-                        limit.getBurst()
+                        saLimit.getRate(),
+                        saLimit.getBurst()
                 );
             }
 
@@ -106,5 +107,35 @@ public class RateLimitingFilter
                     }
                     """);
         }
+    }
+
+    /**
+     * Извлекает реальный IP-адрес клиента из запроса,
+     * учитывая заголовки прокси (X-Forwarded-For, Proxy-Client-IP и т.п.).
+     */
+    private String getClientIpAddress(HttpServletRequest request) {
+        String ipAddress = request.getHeader("X-Forwarded-For");
+        if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+            ipAddress = request.getHeader("Proxy-Client-IP");
+        }
+        if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+            ipAddress = request.getHeader("WL-Proxy-Client-IP");
+        }
+        if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+            ipAddress = request.getHeader("HTTP_CLIENT_IP");
+        }
+        if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+            ipAddress = request.getHeader("HTTP_X_FORWARDED_FOR");
+        }
+        if (ipAddress == null || ipAddress.isEmpty() || "unknown".equalsIgnoreCase(ipAddress)) {
+            ipAddress = request.getRemoteAddr();
+        }
+        if (ipAddress != null && ipAddress.contains(",")) {
+            ipAddress = ipAddress.split(",")[0].trim();
+        }
+        if (ipAddress == null || ipAddress.isBlank()) {
+            ipAddress = "0.0.0.0";
+        }
+        return ipAddress;
     }
 }
